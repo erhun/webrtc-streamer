@@ -1,3 +1,5 @@
+> 当前实现与验证边界见 [streaming-fixes.md](streaming-fixes.md)。本文保留历史设计/调试记录，不能代替当前版本验收。
+
 # Native 编译与部署（libwebrtc C++ passthrough）
 
 > 本文记录 scrcpy-server 集成 libwebrtc（m150）C++ passthrough 的**完整可复现**流程：

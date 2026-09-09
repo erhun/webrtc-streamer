@@ -18,6 +18,9 @@ public final class AudioRawRecorder implements AsyncProcessor {
     private final PacketSink streamer;
 
     private Thread thread;
+    private final Object captureLock = new Object();
+    private boolean captureStarted;
+    private boolean stopped;
 
     public AudioRawRecorder(AudioCapture capture, PacketSink streamer) {
         this.capture = capture;
@@ -36,7 +39,11 @@ public final class AudioRawRecorder implements AsyncProcessor {
 
         try {
             try {
-                capture.start();
+                synchronized (captureLock) {
+                    if (stopped) { return; }
+                    captureStarted = true;
+                    capture.start();
+                }
             } catch (Throwable t) {
                 // Notify the client that the audio could not be captured
                 streamer.writeDisableStream(false);
@@ -50,6 +57,10 @@ public final class AudioRawRecorder implements AsyncProcessor {
                 if (r < 0) {
                     throw new IOException("Could not read audio: " + r);
                 }
+                if (r == 0) {
+                    try { Thread.sleep(2); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+                    continue;
+                }
                 buffer.limit(r);
 
                 streamer.writePacket(buffer, bufferInfo);
@@ -60,7 +71,7 @@ public final class AudioRawRecorder implements AsyncProcessor {
                 Ln.e("Audio capture error", e);
             }
         } finally {
-            capture.stop();
+            stopCapture();
         }
     }
 
@@ -83,11 +94,18 @@ public final class AudioRawRecorder implements AsyncProcessor {
         thread.start();
     }
 
+    private void stopCapture() {
+        synchronized (captureLock) {
+            stopped = true;
+            if (captureStarted) { captureStarted = false; capture.stop(); }
+        }
+    }
     @Override
     public void stop() {
         if (thread != null) {
             thread.interrupt();
         }
+        stopCapture();
     }
 
     @Override

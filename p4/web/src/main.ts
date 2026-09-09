@@ -6,9 +6,9 @@ function queryParam(name: string): string | null {
   return new URLSearchParams(window.location.search).get(name);
 }
 
-const TURN_URL = queryParam('turn') ?? 'turn:10.20.10.7:3478';
-const TURN_USER = queryParam('user') ?? 'turnuser';
-const TURN_CRED = queryParam('cred') ?? 'turnpassword';
+const TURN_URL = queryParam('turn');
+const TURN_USER = queryParam('user') ?? '';
+const TURN_CRED = queryParam('cred') ?? '';
 
 function el<K extends keyof HTMLElementTagNameMap>(
     tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -30,7 +30,9 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
   urlInput.placeholder = 'ws://云机IP:8080';
   urlInput.value = 'ws://localhost:8080';
   const connectBtn = el('button', 'connect-btn', '连接');
-  connectBar.append(urlInput, connectBtn);
+  const tokenInput = el('input', 'token-input') as HTMLInputElement;
+  tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证'; tokenInput.autocomplete = 'off';
+  connectBar.append(urlInput, tokenInput, connectBtn);
 
   const stage = el('div', 'stage');
   const video = el('video') as HTMLVideoElement;
@@ -64,9 +66,13 @@ function main(): void {
     if (!url) {
       return;
     }
+    client?.close();
     client = new ScrcpyClient({
       onStateChange: (state) => {
         status.textContent = state;
+        const busy = state === 'connecting' || state === 'connected';
+        (document.querySelector('.connect-btn') as HTMLButtonElement).disabled = busy;
+        (document.querySelector('.url-input') as HTMLInputElement).disabled = busy;
       },
       onVideoTrack: (stream) => {
         video.srcObject = stream;
@@ -87,7 +93,8 @@ function main(): void {
 
     await client.connect({
       signalingUrl: url,
-      iceServers: [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }],
+      sessionToken: (document.querySelector('.token-input') as HTMLInputElement).value,
+      iceServers: TURN_URL ? [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }] : [],
     });
 
     (window as unknown as { __pc: RTCPeerConnection | null }).__pc = client.peerConnection;
@@ -96,7 +103,7 @@ function main(): void {
 
   document.querySelector('.connect-btn')!.addEventListener('click', () => {
     const url = (document.querySelector('.url-input') as HTMLInputElement).value;
-    void connect(url);
+    void connect(url).catch((error) => { status.textContent = String(error); client?.close(); });
   });
 
   video.addEventListener('touchstart', (e) => input?.handleTouchStart(e, video), { passive: false });

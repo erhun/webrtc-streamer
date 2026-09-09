@@ -58,6 +58,8 @@ public final class OpenGLRunner {
         HandlerThread thread;
         synchronized (OpenGLRunner.class) {
             thread = handlerThread;
+            handlerThread = null;
+            handler = null;
         }
         if (thread != null) {
             thread.quitSafely();

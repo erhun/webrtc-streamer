@@ -12,6 +12,7 @@
 #include "api/scoped_refptr.h"
 #include "rtc_base/synchronization/mutex.h"
 
+#include "media_clock.h"
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -48,6 +49,7 @@ protected:
     webrtc::VideoSourceInterface<webrtc::VideoFrame>* source() override;
 
 private:
+    MediaClock clock_;
     webrtc::VideoBroadcaster broadcaster_;
     std::vector<uint8_t> sps_pps_;
     int width_ = 0;
@@ -76,10 +78,5 @@ private:
     std::function<void(int, double)> bitrate_callback_;
 };
 
-using BitrateCallback = void (*)(int, double);
-using KeyFrameRequestCallback = void (*)();
-void SetGlobalCallbacks(BitrateCallback bitrate, KeyFrameRequestCallback key_frame_request);
-
 }
-
 #endif

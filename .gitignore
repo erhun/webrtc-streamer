@@ -9,3 +9,9 @@ build/
 local.properties
 /scrcpy-server
 /tmp/
+
+server/native-build.json
+server/native-*/
+__pycache__/
+
+tests/streaming-tests-*/

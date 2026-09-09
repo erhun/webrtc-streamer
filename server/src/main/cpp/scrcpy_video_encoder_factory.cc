@@ -12,7 +12,11 @@ std::vector<webrtc::SdpVideoFormat> ScrcpyVideoEncoderFactory::GetSupportedForma
 
 std::unique_ptr<webrtc::VideoEncoder> ScrcpyVideoEncoderFactory::Create(const webrtc::Environment& env,
         const webrtc::SdpVideoFormat& format) {
-    return std::make_unique<ScrcpyPassthroughEncoder>();
+    if (format.name != "H264") { return nullptr; }
+    auto encoder = std::make_unique<ScrcpyPassthroughEncoder>();
+    encoder->SetBitrateCallback(bitrate_);
+    encoder->SetKeyFrameRequestCallback(keyframe_);
+    return encoder;
 }
 
 }

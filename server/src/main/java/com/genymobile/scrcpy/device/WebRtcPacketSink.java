@@ -45,7 +45,7 @@ public class WebRtcPacketSink implements PacketSink {
         if (video) {
             writeVideoPacket(buffer, pts, config, keyFrame);
         } else {
-            writeAudioPacket(buffer, pts);
+            if (!config) { writeAudioPacket(buffer, pts); }
         }
     }
 
@@ -81,6 +81,6 @@ public class WebRtcPacketSink implements PacketSink {
     }
 
     private void writeAudioPacket(ByteBuffer buffer, long pts) {
-        bridge.pushEncodedAudioFrame(buffer, pts);
+        bridge.pushPcm(buffer, pts);
     }
 }
