@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        android:sharedUserId="android.uid.system">
+    <uses-permission android:name="android.permission.CAPTURE_VIDEO_OUTPUT" />
+    <uses-permission android:name="android.permission.MANAGE_MEDIA_PROJECTION" />
+    <application android:label="scrcpy-server">
+        <service android:name="com.genymobile.scrcpy.ServerService" android:exported="true" />
+    </application>
+</manifest>
