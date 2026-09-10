@@ -132,3 +132,22 @@ https://webrtc.googlesource.com/src/+/refs/heads/main/api/video/video_source_int
 
 轻量回归通过，但不涵盖完整 libwebrtc 编译和暂停恢复集成测试。需重新编译 JNI/APK，
 验证静止画面首次连接、零码率恢复和关闭期间刷新请求，以及首帧实际显示时间。
+
+## 实际 libwebrtc 源码核对：QP 与初始尺寸丢帧
+
+用户提供的 VideoStreamEncoderResourceManager::ConfigureQualityScaler 使用：
+(存在 QP 阈值 OR encoder_config.is_quality_scaling_allowed) AND
+encoder_info.is_qp_trusted.value_or(true)，并要求启用分辨率缩放。
+因此 scaling_settings=kOff 本身不是强制关闭条件。passthrough 未报告有效 QP，
+现在明确设置 is_qp_trusted=false，触发 UpdateQualityScalerSettings(nullopt)，
+进而通过 OnQualityScalerSettingsUpdated 禁用 InitialFrameDropper。
+
+同版本 DropDueToSize 在预算低于 300kbps 时使用 320x240 像素阈值，
+而 384x854 仍高于该阈值；初始最多丢四帧。这与日志现象相容，但缺少内部
+逐帧 DropReason，不能断言所有缺失帧都由该分支丢弃。
+本修改保留 Java 码率/分辨率自适应、WebRTC 暂停和常规拥塞控制。
+不将 has_trusted_rate_controller 设为 true，也不全局关闭丢帧。
+
+验证：现有轻量回归通过。缺完整 libwebrtc 工具链，native 编译及实测待完成。
+验收比较连接后 Source keyframe 与 Encode keyframe 的 pts_us、帧大小和首帧耗时；
+不能只凭源码修改推断性能收益。若仍缺帧，继续区分队列、暂停与媒体优化丢帧。
