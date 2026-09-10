@@ -113,25 +113,12 @@ for _ in $(seq 1 30); do
   [ "$boot" = "1" ] && break
   sleep 3
 done
-sleep 3
+[ "$boot" = "1" ] || { err "模拟器启动超时"; exit 1; }
 
-# ============================================================
-# 4. 启动云机服务
-# ============================================================
+# Re-establish root after reboot, pass a session token, and stop on startup failure.
 log "启动云机 ServerService"
-adb -s "$SERIAL" shell "am startservice -n com.genymobile.scrcpy/.ServerService --esa args '4.1,signal_port=$SIGNAL_PORT,video_codec=$VIDEO_CODEC'" || true
-sleep 8
-
-# ============================================================
-# 5. adb forward + 验证
-# ============================================================
-adb -s "$SERIAL" forward "tcp:$SIGNAL_PORT" "tcp:$SIGNAL_PORT"
-LISTENING="$(adb -s "$SERIAL" shell "ss -tlnp 2>/dev/null | grep $SIGNAL_PORT" || true)"
-if [ -n "$LISTENING" ]; then
-  log "✅ 云机就绪: 监听 $SIGNAL_PORT 端口"
-else
-  err "8080 端口未监听，云机启动可能失败，检查: adb logcat -s scrcpy:*"
-fi
+SERIAL="$SERIAL" SIGNAL_PORT="$SIGNAL_PORT" VIDEO_CODEC="$VIDEO_CODEC" \
+  bash "$ROOT/p4/start-server.sh"
 
 # ============================================================
 # 6. 可选：启动 coturn
