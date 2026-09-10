@@ -36,16 +36,21 @@ else:
     raise AssertionError(args)
 """)
     adb.chmod(0o755)
-    for case in ('nonroot', 'denied', 'ok'):
+    cases = [('nonroot', 'a' * 64, False), ('denied', 'a' * 64, False),
+             ('ok', 'a' * 31, False), ('ok', 'a' * 32, True),
+             ('ok', 'a' * 256, True), ('ok', 'a' * 257, False),
+             ('ok', 'a' * 32 + ' ', False), ('ok', 'a' * 32 + '\n', False),
+             ('ok', 'Ab9_-' * 8, True), ('ok', 'a' * 64, True)]
+    for case, value, success in cases:
         for name in ('root-mark', 'forward-mark'):
             (work / name).unlink(missing_ok=True)
         env = dict(os.environ, PATH=str(work) + ':' + os.environ['PATH'],
                    CASE=case, ROOT_MARK=str(work / 'root-mark'), FORWARD_MARK=str(work / 'forward-mark'),
-                   SIGNAL_TOKEN='a' * 64, TURN_URL='turn:10.0.2.2:3478',
+                   SIGNAL_TOKEN=value, TURN_URL='turn:10.0.2.2:3478',
                    TURN_PASSWORD="quote' dollar$ space", TURN_USER='test')
         result = subprocess.run(['bash', str(work / 'p4/start-server.sh')], env=env, text=True, capture_output=True)
-        assert (result.returncode == 0) == (case == 'ok'), result.stderr
-        assert (work / 'forward-mark').exists() == (case == 'ok')
+        assert (result.returncode == 0) == success, result.stderr
+        assert (work / 'forward-mark').exists() == success
         assert env['SIGNAL_TOKEN'] not in result.stdout + result.stderr
     token = work / 'tmp/session-token.txt'
     assert token.read_text().strip() == 'a' * 64

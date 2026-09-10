@@ -19,9 +19,15 @@ uid="$(adb -s "$SERIAL" shell id -u | tr -d '\r\n')"
 if [ -z "${SIGNAL_TOKEN:-}" ]; then
   SIGNAL_TOKEN="$(openssl rand -hex 32)"
 fi
-[[ "$SIGNAL_TOKEN" =~ ^[a-zA-Z0-9_-]{32,256}$ ]] || {
-  echo "SIGNAL_TOKEN 必须为 32–256 位字母、数字、下划线或连字符" >&2; exit 1;
-}
+# Avoid bounded ERE repeats: macOS regex implementations may cap them at 255.
+token_length=${#SIGNAL_TOKEN}
+if (( token_length < 32 || token_length > 256 )); then
+  echo "SIGNAL_TOKEN 长度必须为 32–256（当前 $token_length）" >&2; exit 1;
+fi
+case "$SIGNAL_TOKEN" in
+  *[!a-zA-Z0-9_-]*)
+    echo "SIGNAL_TOKEN 只能包含字母、数字、下划线或连字符" >&2; exit 1 ;;
+esac
 args="4.1,signal_port=$SIGNAL_PORT,video_codec=$VIDEO_CODEC,signal_token=$SIGNAL_TOKEN"
 # am --esa uses comma-separated values; disallow commas/newlines in these options.
 for key in TURN_URL TURN_USER TURN_PASSWORD; do
