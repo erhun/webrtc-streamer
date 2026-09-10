@@ -6,9 +6,9 @@ function queryParam(name: string): string | null {
   return new URLSearchParams(window.location.search).get(name);
 }
 
-const TURN_URL = queryParam('turn') ?? 'turn:10.20.10.7:3478';
-const TURN_USER = queryParam('user') ?? 'turnuser';
-const TURN_CRED = queryParam('cred') ?? 'turnpassword';
+const TURN_URL = queryParam('turn');
+const TURN_USER = queryParam('user') ?? '';
+const TURN_CRED = queryParam('cred') ?? '';
 
 function el<K extends keyof HTMLElementTagNameMap>(
     tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -30,11 +30,14 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
   urlInput.placeholder = 'ws://云机IP:8080';
   urlInput.value = 'ws://localhost:8080';
   const connectBtn = el('button', 'connect-btn', '连接');
-  connectBar.append(urlInput, connectBtn);
+  const tokenInput = el('input', 'token-input') as HTMLInputElement;
+  tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证'; tokenInput.autocomplete = 'off';
+  connectBar.append(urlInput, tokenInput, connectBtn);
 
   const stage = el('div', 'stage');
   const video = el('video') as HTMLVideoElement;
   video.autoplay = true;
+  video.muted = true; // Start reliably before asking for audible playback.
   video.playsInline = true;
   stage.append(video);
 
@@ -42,7 +45,16 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
   const backBtn = el('button', 'tool-btn', '返回');
   const homeBtn = el('button', 'tool-btn', '主页');
   const status = el('span', 'status');
-  toolbar.append(backBtn, homeBtn, status);
+  const audioBtn = el('button', 'audio-btn', '开启声音');
+  audioBtn.addEventListener('click', () => {
+    video.muted = !video.muted;
+    audioBtn.textContent = video.muted ? '开启声音' : '静音';
+    void video.play().catch(() => { status.textContent = '播放被阻止，请再次点击开启声音'; });
+  });
+  toolbar.append(backBtn, homeBtn, audioBtn, status);
+  const diagnostics = el('pre', 'diagnostics');
+  diagnostics.id = 'diagnostics';
+  root.append(diagnostics);
 
   root.append(connectBar, stage, toolbar);
 
@@ -52,6 +64,7 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
 function main(): void {
   const { video, status } = buildUi();
 
+  let frameCallback: number | null = null;
   let client: ScrcpyClient | null = null;
   let input: InputHandler | null = null;
   let dataChannel: RTCDataChannel | null = null;
@@ -64,12 +77,39 @@ function main(): void {
     if (!url) {
       return;
     }
+    client?.close();
+    video.srcObject = null;
+    const started = performance.now();
+    const diagnostics = document.getElementById('diagnostics')!;
+    diagnostics.textContent = '';
+    const trace = (message: string): void => {
+      diagnostics.textContent += message + '\n';
+      console.info('[startup]', message);
+    };
+    let firstFrame = false;
+    const rendered = (): void => {
+      if (firstFrame) { return; }
+      firstFrame = true;
+      trace(`${Math.round(performance.now() - started)}ms 视频首帧已显示`);
+    };
+    if (frameCallback !== null) { video.cancelVideoFrameCallback(frameCallback); frameCallback = null; }
+    video.onloadeddata = null;
+    if ('requestVideoFrameCallback' in video) {
+      frameCallback = video.requestVideoFrameCallback(rendered);
+    } else {
+      (video as HTMLVideoElement).onloadeddata = rendered;
+    }
     client = new ScrcpyClient({
+      onDiagnostic: trace,
       onStateChange: (state) => {
         status.textContent = state;
+        const busy = state === 'connecting' || state === 'connected';
+        (document.querySelector('.connect-btn') as HTMLButtonElement).disabled = busy;
+        (document.querySelector('.url-input') as HTMLInputElement).disabled = busy;
       },
       onVideoTrack: (stream) => {
-        video.srcObject = stream;
+        if (video.srcObject !== stream) { video.srcObject = stream; }
+        void video.play().catch(() => trace('播放被阻止，请点击开启声音按钮'));
       },
       onDataChannelOpen: (channel) => {
         dataChannel = channel;
@@ -87,7 +127,9 @@ function main(): void {
 
     await client.connect({
       signalingUrl: url,
-      iceServers: [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }],
+      iceTransportPolicy: queryParam('ice') === 'relay' ? 'relay' : 'all',
+      sessionToken: (document.querySelector('.token-input') as HTMLInputElement).value,
+      iceServers: TURN_URL ? [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }] : [],
     });
 
     (window as unknown as { __pc: RTCPeerConnection | null }).__pc = client.peerConnection;
@@ -96,7 +138,7 @@ function main(): void {
 
   document.querySelector('.connect-btn')!.addEventListener('click', () => {
     const url = (document.querySelector('.url-input') as HTMLInputElement).value;
-    void connect(url);
+    void connect(url).catch((error) => { status.textContent = String(error); client?.close(); });
   });
 
   video.addEventListener('touchstart', (e) => input?.handleTouchStart(e, video), { passive: false });

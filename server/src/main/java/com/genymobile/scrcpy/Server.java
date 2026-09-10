@@ -29,6 +29,7 @@ import com.genymobile.scrcpy.video.ScreenCapture;
 import com.genymobile.scrcpy.video.SurfaceCapture;
 import com.genymobile.scrcpy.video.SurfaceEncoder;
 import com.genymobile.scrcpy.video.VideoSource;
+import com.genymobile.scrcpy.video.VideoCodec;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
@@ -55,9 +56,11 @@ public final class Server {
     private static class Completion {
         private int running;
         private boolean fatalError;
+        private final Looper looper;
 
         Completion(int running) {
             this.running = running;
+            this.looper = Looper.myLooper();
         }
 
         synchronized void addCompleted(boolean fatalError) {
@@ -66,7 +69,7 @@ public final class Server {
                 this.fatalError = true;
             }
             if (running == 0 || this.fatalError) {
-                Looper.getMainLooper().quitSafely();
+                looper.quitSafely();
             }
         }
     }
@@ -75,7 +78,7 @@ public final class Server {
         // not instantiable
     }
 
-    private static void scrcpy(Context context, Options options) throws IOException, ConfigurationException {
+    private static void scrcpy(Context context, Options options, Session session) throws IOException, ConfigurationException {
         if (Build.VERSION.SDK_INT < AndroidVersions.API_31_ANDROID_12 && options.getVideoSource() == VideoSource.CAMERA) {
             Ln.e("Camera mirroring is not supported before Android 12");
             throw new ConfigurationException("Camera mirroring is not supported");
@@ -110,6 +113,8 @@ public final class Server {
         List<AsyncProcessor> asyncProcessors = new ArrayList<>();
 
         NativeEncoderBridge bridge = null;
+        SignalServer signalServer = null;
+        DataChannelInputStream dataIn = null;
         DesktopConnection connection = null;
         int signalPort = options.getSignalPort();
         if (signalPort == 0) {
@@ -120,8 +125,15 @@ public final class Server {
                 connection.sendDeviceMeta(Device.getDeviceName());
             }
             if (signalPort > 0) {
-                bridge = createBridge();
-                startSignalServer(bridge, signalPort);
+                if (!video || options.getVideoCodec() != VideoCodec.H264) {
+                    throw new ConfigurationException("WebRTC requires H.264 video");
+                }
+                if (options.getSignalToken().length() < 32) {
+                    throw new ConfigurationException("WebRTC requires signal_token with at least 32 characters");
+                }
+                bridge = new NativeEncoderBridge();
+                bridge.setClosedCallback(session::stop);
+                bridge.open(audio, options.getTurnUrl(), options.getTurnUser(), options.getTurnPassword());
             }
 
             Controller controller = null;
@@ -131,7 +143,7 @@ public final class Server {
                 if (connection != null) {
                     controlChannel = connection.getControlChannel();
                 } else if (bridge != null) {
-                    DataChannelInputStream dataIn = new DataChannelInputStream();
+                    dataIn = new DataChannelInputStream(session::stop);
                     DataChannelOutputStream dataOut = new DataChannelOutputStream(bridge);
                     bridge.setDataCallback(dataIn);
                     controlChannel = new ControlChannel(dataIn, dataOut);
@@ -143,7 +155,7 @@ public final class Server {
             }
 
             if (audio) {
-                AudioCodec audioCodec = options.getAudioCodec();
+                AudioCodec audioCodec = bridge != null ? AudioCodec.RAW : options.getAudioCodec();
                 AudioSource audioSource = options.getAudioSource();
                 AudioCapture audioCapture;
                 if (audioSource.isDirect()) {
@@ -187,6 +199,7 @@ public final class Server {
                 }
             }
 
+            if (bridge != null) { signalServer = startSignalServer(bridge, options, session); }
             Completion completion = new Completion(asyncProcessors.size());
             for (AsyncProcessor asyncProcessor : asyncProcessors) {
                 asyncProcessor.start((fatalError) -> {
@@ -196,6 +209,8 @@ public final class Server {
 
             Looper.loop(); // interrupted by the Completion implementation
         } finally {
+            if (signalServer != null) { signalServer.close(); }
+            if (dataIn != null) { dataIn.close(); }
             if (cleanUp != null) {
                 cleanUp.interrupt();
             }
@@ -224,19 +239,9 @@ public final class Server {
                 connection.close();
             }
             if (bridge != null) {
-                bridge.destroyPeerConnection();
-                bridge.destroyAudioEncoder();
-                bridge.destroyTrackSource();
+                bridge.close();
             }
         }
-    }
-
-    private static NativeEncoderBridge createBridge() {
-        NativeEncoderBridge bridge = new NativeEncoderBridge();
-        bridge.createTrackSource();
-        bridge.createAudioEncoder();
-        bridge.createPeerConnection();
-        return bridge;
     }
 
     private static PacketSink createAudioSink(NativeEncoderBridge bridge, DesktopConnection connection, AudioCodec audioCodec, Options options) {
@@ -253,8 +258,11 @@ public final class Server {
         return new Streamer(connection.getVideoFd(), options.getVideoCodec(), options.getSendStreamMeta(), options.getSendFrameMeta());
     }
 
-    private static void startSignalServer(NativeEncoderBridge bridge, int signalPort) {
-        SignalServer signalServer = new SignalServer(signalPort, new SignalServer.Listener() {
+    private static SignalServer startSignalServer(NativeEncoderBridge bridge, Options options, Session session) {
+        SignalServer signalServer = new SignalServer(options.getSignalPort(), options.getSignalToken(), new SignalServer.Listener() {
+            @Override
+            public void onClosed() { session.stop(); }
+
             @Override
             public void onOffer(String sdp) {
                 bridge.onOffer(sdp);
@@ -277,6 +285,7 @@ public final class Server {
             }
         });
         signalServer.start();
+        return signalServer;
     }
 
     private static void prepareMainLooper() {
@@ -294,20 +303,44 @@ public final class Server {
         }
     }
 
-    public static void run(Context context, String... args) {
+    public static final class Session {
+        public enum State { STARTING, RUNNING, STOPPING, STOPPED }
+        private State state = State.STARTING;
+        private Looper looper;
+        public synchronized State getState() { return state; }
+        private synchronized void attach(Looper value) {
+            looper = value;
+            if (state == State.STOPPING) { looper.quitSafely(); }
+            else { state = State.RUNNING; }
+        }
+        public synchronized void stop() {
+            if (state == State.STOPPED) { return; }
+            state = State.STOPPING;
+            if (looper != null) { looper.quitSafely(); }
+        }
+        private synchronized void finished() { state = State.STOPPED; looper = null; }
+    }
+    private static Session activeServiceSession;
+    public static synchronized Session run(Context context, String[] args, Runnable finished) {
+        if (activeServiceSession != null) { return null; }
+        Session session = new Session();
+        activeServiceSession = session;
         new Thread(() -> {
             Looper.prepare();
+            session.attach(Looper.myLooper());
             try {
                 Options options = Options.parse(args);
                 Ln.disableSystemStreams();
                 Ln.initLogLevel(options.getLogLevel());
-                scrcpy(context, options);
-            } catch (ConfigurationException e) {
-                // Do not print stack trace, a user-friendly error-message has already been logged
-            } catch (IOException e) {
-                Ln.e("Server error", e);
+                if (session.getState() != Session.State.STOPPING) { scrcpy(context, options, session); }
+            } catch (Exception e) { Ln.e("Server error", e); }
+            finally {
+                session.finished();
+                synchronized (Server.class) { activeServiceSession = null; }
+                finished.run();
             }
         }, "scrcpy-server").start();
+        return session;
     }
 
     public static void main(String... args) {
@@ -371,7 +404,9 @@ public final class Server {
         }
 
         try {
-            scrcpy(null, options);
+            Session session = new Session();
+            session.attach(Looper.myLooper());
+            scrcpy(null, options, session);
         } catch (ConfigurationException e) {
             // Do not print stack trace, a user-friendly error-message has already been logged
         }

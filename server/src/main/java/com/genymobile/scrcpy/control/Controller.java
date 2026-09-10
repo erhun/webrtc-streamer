@@ -35,6 +35,8 @@ import android.view.MotionEvent;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -77,7 +79,7 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
     // Interval between simulated user activity events
     private static final long KEEP_ACTIVE_INTERVAL_MS = 4000;
 
-    private static final ScheduledExecutorService EXECUTOR = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private ExecutorService startAppExecutor;
 
     private Thread thread;
@@ -103,6 +105,9 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
     private final Object displayDataAvailable = new Object(); // condition variable
 
     private long lastTouchDown;
+    private int lastTouchDisplay = Device.DISPLAY_ID_NONE;
+    private int lastTouchSource = InputDevice.SOURCE_TOUCHSCREEN;
+    private final Map<Integer, Integer> pressedKeys = new HashMap<>();
     private final PointersState pointersState = new PointersState();
     private final MotionEvent.PointerProperties[] pointerProperties = new MotionEvent.PointerProperties[PointersState.MAX_POINTERS];
     private final MotionEvent.PointerCoords[] pointerCoords = new MotionEvent.PointerCoords[PointersState.MAX_POINTERS];
@@ -282,6 +287,9 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
             } catch (IOException e) {
                 Ln.e("Controller error", e);
             } finally {
+                try { releaseInputs(); } catch (RuntimeException e) { Ln.e("Could not release input state", e); }
+                executor.shutdownNow();
+                if (startAppExecutor != null) { startAppExecutor.shutdownNow(); }
                 Ln.d("Controller stopped");
                 if (uhidManager != null) {
                     uhidManager.closeAll();
@@ -440,6 +448,20 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
         throw new AssertionError("Unexpected message type: " + type);
     }
 
+    private void releaseInputs() {
+        for (Map.Entry<Integer, Integer> entry : pressedKeys.entrySet()) {
+            Device.injectKeyEvent(KeyEvent.ACTION_UP, entry.getKey(), 0, 0, entry.getValue(), Device.INJECT_MODE_ASYNC);
+        }
+        pressedKeys.clear();
+        int count = pointersState.update(pointerProperties, pointerCoords);
+        if (count > 0 && lastTouchDisplay != Device.DISPLAY_ID_NONE) {
+            MotionEvent cancel = MotionEvent.obtain(lastTouchDown, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL,
+                    count, pointerProperties, pointerCoords, 0, 0, 1f, 1f, 0, 0, lastTouchSource, 0);
+            try { Device.injectEvent(cancel, lastTouchDisplay, Device.INJECT_MODE_ASYNC); }
+            finally { cancel.recycle(); }
+        }
+    }
+
     private boolean injectKeycode(int action, int keycode, int repeat, int metaState) {
         Ln.d("injectKeycode: keycode=" + keycode + " action=" + action + " t=" + SystemClock.elapsedRealtime());
         if (keepDisplayPowerOff && action == KeyEvent.ACTION_UP && (keycode == KeyEvent.KEYCODE_POWER || keycode == KeyEvent.KEYCODE_WAKEUP)) {
@@ -546,6 +568,8 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
             pointer.setUp(action == MotionEvent.ACTION_UP);
         }
 
+        lastTouchDisplay = targetDisplayId;
+        lastTouchSource = source;
         int pointerCount = pointersState.update(pointerProperties, pointerCoords);
         if (pointerCount == 1) {
             if (action == MotionEvent.ACTION_DOWN) {
@@ -650,7 +674,7 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
      * Schedule a call to set display power to off after a small delay.
      */
     private static void scheduleDisplayPowerOff(int displayId) {
-        EXECUTOR.schedule(() -> {
+        executor.schedule(() -> {
             Ln.i("Forcing display off");
             Device.setDisplayPower(displayId, false);
         }, 200, TimeUnit.MILLISECONDS);
@@ -737,7 +761,12 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
         if (actionDisplayId == Device.DISPLAY_ID_NONE) {
             return false;
         }
-        return Device.injectKeyEvent(action, keyCode, repeat, metaState, actionDisplayId, injectMode);
+        boolean injected = Device.injectKeyEvent(action, keyCode, repeat, metaState, actionDisplayId, injectMode);
+        if (injected) {
+            if (action == KeyEvent.ACTION_DOWN) { pressedKeys.put(keyCode, actionDisplayId); }
+            else if (action == KeyEvent.ACTION_UP) { pressedKeys.remove(keyCode); }
+        }
+        return injected;
     }
 
     private boolean pressReleaseKeycode(int keyCode, int injectMode) {

@@ -1,3 +1,5 @@
+> 本分支 WebRTC 修复与接入变化见 [串流修复说明](docs/streaming-fixes.md)。以下保留 scrcpy 上游说明。
+
 > [!WARNING]
 > **This GitHub repo (<https://github.com/Genymobile/scrcpy>) is the only official
 source for the project. Do not download releases from random websites, even if

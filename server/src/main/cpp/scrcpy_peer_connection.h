@@ -6,6 +6,7 @@
 #include "api/peer_connection_interface.h"
 #include "rtc_base/thread.h"
 
+#include "scrcpy_pcm_audio_source.h"
 #include <functional>
 #include <memory>
 #include <string>
@@ -18,9 +19,15 @@ class DataChannelObserver;
 class ScrcpyPeerConnection {
 public:
     ScrcpyPeerConnection();
+    std::weak_ptr<bool> lifetime() const { return lifetime_; }
     ~ScrcpyPeerConnection();
 
-    bool Initialize(webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> track_source);
+    bool Initialize(webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> track_source,
+            bool audio, const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
+            std::function<void(int, double)> bitrate, std::function<void()> keyframe);
+    void PushAudio(const uint8_t* data, size_t len, int64_t pts_us);
+    void SetClosedCallback(std::function<void()> callback);
+    void OnConnectionClosed();
 
     void SetAnswerCallback(std::function<void(const std::string&)> callback);
     void SetIceCandidateCallback(std::function<void(const std::string&, int, const std::string&)> callback);
@@ -39,6 +46,11 @@ public:
     void OnIceCandidateGathered(const std::string& sdp_mid, int sdp_mline_index, const std::string& sdp);
 
 private:
+    std::shared_ptr<bool> lifetime_ = std::make_shared<bool>(true);
+    webrtc::scoped_refptr<PcmAudioSource> audio_source_;
+    std::function<void()> closed_callback_;
+    bool remote_description_set_ = false;
+    std::vector<std::unique_ptr<webrtc::IceCandidate>> pending_ice_;
     std::unique_ptr<webrtc::Thread> network_thread_;
     std::unique_ptr<webrtc::Thread> worker_thread_;
     std::unique_ptr<webrtc::Thread> signaling_thread_;

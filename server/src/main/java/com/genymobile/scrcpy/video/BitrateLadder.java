@@ -38,6 +38,8 @@ public final class BitrateLadder {
     private static final double UPSCALE_FACTOR = 1.2;
 
     private int level;
+    private long lastChangeMs = Long.MIN_VALUE;
+    private long upgradeSinceMs = -1;
 
     public BitrateLadder() {
         this(0);
@@ -51,7 +53,8 @@ public final class BitrateLadder {
         return LEVELS[level];
     }
 
-    public boolean update(int bps) {
+    public boolean update(int bps) { return update(bps, System.nanoTime() / 1000000); }
+    public boolean update(int bps, long nowMs) {
         int newLevel = level;
         while (newLevel < LEVELS.length - 1 && bps < LEVELS[newLevel].bitRate * DOWNSCALE_FACTOR) {
             newLevel++;
@@ -59,7 +62,14 @@ public final class BitrateLadder {
         while (newLevel > 0 && bps > LEVELS[newLevel - 1].bitRate * UPSCALE_FACTOR) {
             newLevel--;
         }
+        if (newLevel < level) {
+            if (upgradeSinceMs < 0) { upgradeSinceMs = nowMs; }
+            if (nowMs - upgradeSinceMs < 5000) { return false; }
+        } else { upgradeSinceMs = -1; }
         if (newLevel != level) {
+            if (lastChangeMs != Long.MIN_VALUE && nowMs - lastChangeMs < 1000) { return false; }
+            lastChangeMs = nowMs;
+            upgradeSinceMs = -1;
             level = newLevel;
             return true;
         }

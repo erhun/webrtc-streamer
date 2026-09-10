@@ -21,6 +21,6 @@ public class DataChannelOutputStream extends OutputStream {
     public void write(byte[] b, int off, int len) throws IOException {
         byte[] data = new byte[len];
         System.arraycopy(b, off, data, 0, len);
-        bridge.sendData(data);
+        if (!bridge.sendData(data)) { throw new IOException("Control channel closed or backpressured"); }
     }
 }

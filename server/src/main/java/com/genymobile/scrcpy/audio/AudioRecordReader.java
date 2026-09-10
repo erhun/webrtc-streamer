@@ -21,6 +21,7 @@ public class AudioRecordReader {
     private long previousRecorderTimestamp = -1;
     private long previousPts = 0;
     private long nextPts = 0;
+    private long framesRead;
 
     public AudioRecordReader(AudioRecord recorder) {
         this.recorder = recorder;
@@ -37,7 +38,9 @@ public class AudioRecordReader {
 
         int ret = recorder.getTimestamp(timestamp, AudioTimestamp.TIMEBASE_MONOTONIC);
         if (ret == AudioRecord.SUCCESS && timestamp.nanoTime != previousRecorderTimestamp) {
-            pts = timestamp.nanoTime / 1000;
+            // Timestamp refers to framePosition, not the beginning of this read.
+            pts = timestamp.nanoTime / 1000
+                    + (framesRead - timestamp.framePosition) * 1000000L / AudioConfig.SAMPLE_RATE;
             previousRecorderTimestamp = timestamp.nanoTime;
         } else {
             if (nextPts == 0) {
@@ -48,6 +51,7 @@ public class AudioRecordReader {
             pts = nextPts;
         }
 
+        framesRead += r / (AudioConfig.CHANNELS * AudioConfig.BYTES_PER_SAMPLE);
         long durationUs = r * 1000000L / (AudioConfig.CHANNELS * AudioConfig.BYTES_PER_SAMPLE * AudioConfig.SAMPLE_RATE);
         nextPts = pts + durationUs;
 

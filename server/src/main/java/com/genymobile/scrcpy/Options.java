@@ -25,6 +25,15 @@ public class Options {
     private Ln.Level logLevel = Ln.Level.DEBUG;
     private int scid = -1; // 31-bit non-negative value, or -1
     private int signalPort;
+    private String signalToken = "";
+    private String turnUrl = "";
+    private String turnUser = "";
+    private String turnPassword = "";
+    public String getSignalToken() { return signalToken; }
+    public String getTurnUrl() { return turnUrl; }
+    public String getTurnUser() { return turnUser; }
+    public String getTurnPassword() { return turnPassword; }
+
     private boolean video = true;
     private boolean audio = true;
     private int maxSize;
@@ -354,6 +363,10 @@ public class Options {
                     }
                     options.scid = scid;
                     break;
+                case "signal_token": options.signalToken = value; break;
+                case "turn_url": options.turnUrl = value; break;
+                case "turn_user": options.turnUser = value; break;
+                case "turn_password": options.turnPassword = value; break;
                 case "signal_port":
                     options.signalPort = Integer.parseInt(value);
                     break;

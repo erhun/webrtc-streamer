@@ -12,16 +12,6 @@
 
 namespace scrcpy {
 
-namespace {
-BitrateCallback g_bitrate_callback = nullptr;
-KeyFrameRequestCallback g_key_frame_request_callback = nullptr;
-}
-
-void SetGlobalCallbacks(BitrateCallback bitrate, KeyFrameRequestCallback key_frame_request) {
-    g_bitrate_callback = bitrate;
-    g_key_frame_request_callback = key_frame_request;
-}
-
 EncodedVideoFrameBuffer::EncodedVideoFrameBuffer(std::vector<uint8_t> data, int width, int height, bool keyframe)
         : data_(std::move(data)), width_(width), height_(height), keyframe_(keyframe) {
 }
@@ -84,9 +74,11 @@ void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, 
     webrtc::scoped_refptr<EncodedVideoFrameBuffer> buffer =
             webrtc::make_ref_counted<EncodedVideoFrameBuffer>(std::move(data), width, height, keyframe);
 
+    const int64_t capture_us = clock_.Normalize(pts_us);
     webrtc::VideoFrame frame = webrtc::VideoFrame::Builder()
             .set_video_frame_buffer(buffer)
-            .set_rtp_timestamp(static_cast<uint32_t>(pts_us * 9 / 100000))
+            .set_timestamp_us(capture_us)
+            .set_rtp_timestamp(MediaClock::Rtp90k(capture_us))
             .build();
 
     broadcaster_.OnFrame(frame);
@@ -144,8 +136,7 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
                 }
                 if (callback) {
                     callback();
-                } else if (g_key_frame_request_callback != nullptr) {
-                    g_key_frame_request_callback();
+
                 }
                 break;
             }
@@ -170,7 +161,7 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
     image._encodedWidth = encoded->width();
     image._encodedHeight = encoded->height();
     static int dbg_count = 0;
-    if (++dbg_count <= 2) {
+    if (++dbg_count <= 2 && encoded->size() >= 8) {
         const uint8_t* d = encoded->data();
         SCP_LOGE("Encode: key=%d size=%zu data[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x",
                 encoded->keyframe(), encoded->size(), d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
@@ -206,13 +197,16 @@ void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters)
     }
     if (callback) {
         callback(parameters.bitrate.get_sum_bps(), parameters.framerate_fps);
-    } else if (g_bitrate_callback != nullptr) {
-        g_bitrate_callback(parameters.bitrate.get_sum_bps(), parameters.framerate_fps);
+
     }
 }
 
 ScrcpyPassthroughEncoder::EncoderInfo ScrcpyPassthroughEncoder::GetEncoderInfo() const {
-    return EncoderInfo();
+    EncoderInfo info;
+    info.supports_native_handle = true;
+    info.is_hardware_accelerated = true;
+    info.implementation_name = "MediaCodecPassthrough";
+    return info;
 }
 
 }
