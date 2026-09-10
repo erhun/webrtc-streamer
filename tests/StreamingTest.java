@@ -12,6 +12,14 @@ public final class StreamingTest {
         check(!admission.claim(b, token, 3)); check(!admission.release(b)); check(admission.owns(a));
         check(admission.release(a)); check(!admission.claim(b, token, 4));
         check(!new SessionAdmission(token, 0).claim(a, token, 300001));
+        BitrateLadder startup = new BitrateLadder();
+        check(startup.update(200000, 0));
+        check(startup.current().getMaxSize() == 854 && startup.current().getFps() == 24);
+        check(!startup.update(199167, 100));
+        check(!startup.update(198333, 200));
+        check(!startup.update(13000000, 1000));
+        check(startup.update(13000000, 6000));
+        check(startup.current().getMaxSize() == 1920);
         BitrateLadder ladder = new BitrateLadder();
         check(ladder.update(1500000, 0)); check(ladder.current().getMaxSize() == 960);
         check(!ladder.update(13000000, 1000)); check(!ladder.update(13000000, 5999));

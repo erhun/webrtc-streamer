@@ -62,6 +62,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private int pendingBitrate = -1;
     private boolean pendingKeyFrame;
     private boolean startupCaptureRefreshed;
+    // Conservative bootstrap budget, not a measured network capacity.
+    private static final int STARTUP_BITRATE = 200_000;
     private int adaptiveMaxSize;
     private final float requestedMaxFps;
     private boolean suspended;
@@ -449,6 +451,17 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         boolean reconfigure = keyFrame && !startupCaptureRefreshed;
         if (reconfigure) {
             startupCaptureRefreshed = true;
+            // Seed both the capture settings and ladder before the first refresh.
+            // The initial ~200kbps feedback can then update bitrate in-place,
+            // instead of forcing a second resolution/fps reconfiguration.
+            if (bps <= 0) {
+                int startupBitrate = Math.max(1, Math.min(videoBitRate, STARTUP_BITRATE));
+                bitrateLadder.update(startupBitrate);
+                BitrateLadder.Level startupLevel = bitrateLadder.current();
+                videoBitRate = startupBitrate;
+                adaptiveMaxSize = startupLevel.getMaxSize();
+                maxFps = requestedMaxFps > 0 ? Math.min(requestedMaxFps, startupLevel.getFps()) : startupLevel.getFps();
+            }
             Ln.d("Startup keyframe: refreshing capture");
         }
         if (bps >= 0) {
