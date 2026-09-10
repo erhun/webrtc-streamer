@@ -433,20 +433,13 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             bps = pendingBitrate; pendingBitrate = -1;
             keyFrame = pendingKeyFrame; pendingKeyFrame = false;
         }
-        // A static display may have produced its only frame before WebRTC had a
-        // sender. Refresh capture once to supply a new surface frame; requesting
-        // an IDR alone does not guarantee input arrives at MediaCodec.
-        if (keyFrame && !startupCaptureRefreshed) {
+        // Merge startup refresh and bitrate adaptation into one reconfiguration.
+        // Preserve the refresh for static displays, but configure the new codec
+        // with the latest bitrate/size instead of immediately resetting it again.
+        boolean reconfigure = keyFrame && !startupCaptureRefreshed;
+        if (reconfigure) {
             startupCaptureRefreshed = true;
-            if (bps >= 0) {
-                synchronized (feedbackLock) {
-                    if (pendingBitrate < 0) { pendingBitrate = bps; }
-                }
-            }
             Ln.d("Startup keyframe: refreshing capture");
-            captureControl.reset(CaptureControl.RESET_REASON_BITRATE_CHANGED);
-            synchronized (feedbackLock) { pendingKeyFrame = true; }
-            return;
         }
         if (bps >= 0) {
             if (bps == 0) { suspended = true; waitingForKeyFrame = true; }
@@ -457,18 +450,20 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 BitrateLadder.Level level = bitrateLadder.current();
                 videoBitRate = Math.max(1, Math.min(bps, level.getBitRate()));
                 float nextFps = requestedMaxFps > 0 ? Math.min(requestedMaxFps, level.getFps()) : level.getFps();
-                boolean reconfigure = levelChanged || adaptiveMaxSize != level.getMaxSize() || nextFps != maxFps;
+                reconfigure |= levelChanged || adaptiveMaxSize != level.getMaxSize() || nextFps != maxFps;
                 maxFps = nextFps;
                 adaptiveMaxSize = level.getMaxSize();
-                if (reconfigure) {
-                    captureControl.reset(CaptureControl.RESET_REASON_BITRATE_CHANGED);
-                    synchronized (feedbackLock) { pendingKeyFrame = true; }
-                    return;
+                if (!reconfigure) {
+                    Bundle params = new Bundle();
+                    params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, videoBitRate);
+                    codec.setParameters(params);
                 }
-                Bundle params = new Bundle();
-                params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, videoBitRate);
-                codec.setParameters(params);
             }
+        }
+        if (reconfigure) {
+            captureControl.reset(CaptureControl.RESET_REASON_BITRATE_CHANGED);
+            synchronized (feedbackLock) { pendingKeyFrame = true; }
+            return;
         }
         if (keyFrame && !captureControl.isResetRequested()) {
             Bundle params = new Bundle();
