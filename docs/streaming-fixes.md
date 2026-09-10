@@ -114,3 +114,21 @@ ICE、WebRTC connected、选中路径和实际视频首帧。收到 track 不代
 只提交一次重建。仍保留静止画面刷新及后续关键帧请求。若新的反馈稍后才到达，
 仍可能需要后续调整，不承诺始终只有一次重建。轻量回归通过；需要实机对比
 1026ms 首帧基线，尤其检查静止画面、低码率和零码率恢复场景。
+
+## WebRTC 启动丢帧恢复
+
+上游 VideoStreamEncoder 在暂停时不会缓存 kNative 帧，恢复后会向 source 请求
+RequestRefreshFrame。原始 VideoBroadcaster 继承的实现为空。本次用
+RefreshVideoBroadcaster 把请求转发到会话内 JNI keyframe 回调，Java 仍在编码线程
+合并处理，未禁用零码率暂停、拥塞控制或全局丢帧。回调在 source 构造时绑定，
+关闭后由现有 Callbacks::Clear 阻止 Java 调用，不缓存或重发连接前旧画面。
+
+新增 Source refresh requested by WebRTC，以及 Source keyframe / Encode keyframe
+的 pts_us、RTP 时间戳，可逐帧匹配源端产生和 passthrough 接收。收到源刷新请求
+并不证明所有先前关键帧均因暂停丢弃；编码队列、重新配置等仍需逐帧日志验证。
+上游参考（当前主线，未取得用户指定 revision 的源码）：
+https://webrtc.googlesource.com/src/+/refs/heads/main/video/video_stream_encoder.cc
+https://webrtc.googlesource.com/src/+/refs/heads/main/api/video/video_source_interface.h
+
+轻量回归通过，但不涵盖完整 libwebrtc 编译和暂停恢复集成测试。需重新编译 JNI/APK，
+验证静止画面首次连接、零码率恢复和关闭期间刷新请求，以及首帧实际显示时间。

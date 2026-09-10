@@ -44,7 +44,13 @@ bool EncodedVideoFrameBuffer::keyframe() const {
     return keyframe_;
 }
 
-EncodedVideoTrackSource::EncodedVideoTrackSource() : webrtc::VideoTrackSource(false) {
+void RefreshVideoBroadcaster::RequestRefreshFrame() {
+    SCP_LOGE("Source refresh requested by WebRTC");
+    if (refresh_) { refresh_(); }
+}
+
+EncodedVideoTrackSource::EncodedVideoTrackSource(std::function<void()> refresh)
+        : webrtc::VideoTrackSource(false), broadcaster_(std::move(refresh)) {
 }
 
 void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, int64_t pts_us, bool config, bool keyframe,
@@ -81,6 +87,10 @@ void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, 
             .set_rtp_timestamp(MediaClock::Rtp90k(capture_us))
             .build();
 
+    if (keyframe) {
+        SCP_LOGE("Source keyframe: pts_us=%lld rtp=%u bytes=%zu sinks=%d",
+                static_cast<long long>(capture_us), frame.rtp_timestamp(), len, broadcaster_.frame_wanted());
+    }
     broadcaster_.OnFrame(frame);
 }
 
@@ -153,6 +163,10 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
         return WEBRTC_VIDEO_CODEC_ERROR;
     }
 
+    if (encoded->keyframe()) {
+        SCP_LOGE("Encode keyframe: pts_us=%lld rtp=%u bytes=%zu",
+                static_cast<long long>(frame.timestamp_us()), frame.rtp_timestamp(), encoded->size());
+    }
     webrtc::EncodedImage image;
     image.SetEncodedData(webrtc::EncodedImageBuffer::Create(encoded->data(), encoded->size()));
     image.SetRtpTimestamp(frame.rtp_timestamp());

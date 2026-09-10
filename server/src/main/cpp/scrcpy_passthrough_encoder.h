@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <vector>
+#include <utility>
 
 namespace scrcpy {
 
@@ -39,9 +40,19 @@ private:
     const bool keyframe_;
 };
 
+// VideoBroadcaster's default RequestRefreshFrame is a no-op. Forward requests
+// without holding its sink lock; Java coalesces them on the encoder thread.
+class RefreshVideoBroadcaster : public webrtc::VideoBroadcaster {
+public:
+    explicit RefreshVideoBroadcaster(std::function<void()> refresh) : refresh_(std::move(refresh)) {}
+    void RequestRefreshFrame() override;
+private:
+    const std::function<void()> refresh_;
+};
+
 class EncodedVideoTrackSource : public webrtc::VideoTrackSource {
 public:
-    EncodedVideoTrackSource();
+    explicit EncodedVideoTrackSource(std::function<void()> refresh = {});
 
     void OnEncodedFrame(const uint8_t* annexb, size_t len, int64_t pts_us, bool config, bool keyframe, int width, int height);
 
@@ -50,7 +61,7 @@ protected:
 
 private:
     MediaClock clock_;
-    webrtc::VideoBroadcaster broadcaster_;
+    RefreshVideoBroadcaster broadcaster_;
     std::vector<uint8_t> sps_pps_;
     int width_ = 0;
     int height_ = 0;
