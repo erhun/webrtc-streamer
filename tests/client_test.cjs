@@ -8,7 +8,8 @@ class Channel {
 }
 class Peer {
   remoteDescription = null; candidates = [];
-  constructor() { Peer.last = this; }
+  constructor(config) { Peer.last = this; this.config = config; }
+  async getStats() { return new Map(); }
   createDataChannel() { return new Channel(); }
   addTransceiver() {}
   async createOffer() { return { type: 'offer', sdp: 'offer' }; }
@@ -27,8 +28,8 @@ class Socket {
 global.RTCPeerConnection = Peer; global.WebSocket = Socket;
 global.MediaStream = class { addTrack() {} };
 (async () => {
-  const states = [];
-  const client = new ScrcpyClient({onStateChange: s => states.push(s), onError() {}, onVideoTrack() {}, onDataChannelOpen() {}});
+  const states = [], diagnostics = [];
+  const client = new ScrcpyClient({onStateChange: s => states.push(s), onError() {}, onDiagnostic: s => diagnostics.push(s), onVideoTrack() {}, onDataChannelOpen() {}});
   const options = {signalingUrl: 'ws://localhost:8080', sessionToken: 'a'.repeat(32), iceServers: []};
   await client.connect(options);
   const ws = Socket.last, pc = Peer.last;
@@ -39,7 +40,17 @@ global.MediaStream = class { addTrack() {} };
   ws.receive({type: 'ice', sdpMid: '0', sdpMLineIndex: 0, candidate: 'later'});
   await tick(); await tick(); await tick();
   assert.deepEqual(pc.candidates.map(x => x.candidate), ['early', 'later']);
-  await client.connect(options);
+  assert.ok(diagnostics.some(s => s.includes('Answer 已应用')));
+  pc.connectionState = 'connected'; pc.onconnectionstatechange(); await tick();
+  assert.equal(states.at(-1), 'connected');
+  const oldDiagnosticCount = diagnostics.length;
+  await client.connect({...options, iceTransportPolicy: 'relay'});
+  assert.equal(client.peerConnection, null);
+  assert.equal(states.at(-1), 'failed');
+  pc.oniceconnectionstatechange();
+  assert.equal(diagnostics.length, oldDiagnosticCount);
+  await client.connect({...options, iceTransportPolicy: 'relay', iceServers: [{urls: 'turn:example.test:3478'}]});
+  assert.equal(Peer.last.config.iceTransportPolicy, 'relay');
   const replacement = client.peerConnection;
   ws.receive({type: 'answer', sdp: 'stale'}); await tick(); assert.equal(client.peerConnection, replacement);
   client.dataChannel.bufferedAmount = 262144;
