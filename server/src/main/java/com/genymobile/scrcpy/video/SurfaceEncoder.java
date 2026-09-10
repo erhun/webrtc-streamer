@@ -61,6 +61,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
     private boolean pendingKeyFrame;
+    private boolean startupCaptureRefreshed;
     private int adaptiveMaxSize;
     private final float requestedMaxFps;
     private boolean suspended;
@@ -431,6 +432,21 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         synchronized (feedbackLock) {
             bps = pendingBitrate; pendingBitrate = -1;
             keyFrame = pendingKeyFrame; pendingKeyFrame = false;
+        }
+        // A static display may have produced its only frame before WebRTC had a
+        // sender. Refresh capture once to supply a new surface frame; requesting
+        // an IDR alone does not guarantee input arrives at MediaCodec.
+        if (keyFrame && !startupCaptureRefreshed) {
+            startupCaptureRefreshed = true;
+            if (bps >= 0) {
+                synchronized (feedbackLock) {
+                    if (pendingBitrate < 0) { pendingBitrate = bps; }
+                }
+            }
+            Ln.d("Startup keyframe: refreshing capture");
+            captureControl.reset(CaptureControl.RESET_REASON_BITRATE_CHANGED);
+            synchronized (feedbackLock) { pendingKeyFrame = true; }
+            return;
         }
         if (bps >= 0) {
             if (bps == 0) { suspended = true; waitingForKeyFrame = true; }
