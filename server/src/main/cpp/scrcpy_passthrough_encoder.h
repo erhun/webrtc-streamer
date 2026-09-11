@@ -84,6 +84,7 @@ public:
 
 private:
     webrtc::Mutex mutex_;
+    bool received_positive_rate_ = false;
     webrtc::EncodedImageCallback* callback_ = nullptr;
     std::function<void()> key_frame_request_callback_;
     std::function<void(int, double)> bitrate_callback_;

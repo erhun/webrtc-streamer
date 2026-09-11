@@ -115,6 +115,8 @@ void ScrcpyPassthroughEncoder::SetBitrateCallback(std::function<void(int, double
 }
 
 int32_t ScrcpyPassthroughEncoder::InitEncode(const webrtc::VideoCodec* codec, const Settings& settings) {
+    webrtc::MutexLock lock(&mutex_);
+    received_positive_rate_ = false;
     return WEBRTC_VIDEO_CODEC_OK;
 }
 
@@ -205,13 +207,23 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
 
 void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters) {
     std::function<void(int, double)> callback;
+    std::function<void()> refresh;
+    const int bps = parameters.bitrate.get_sum_bps();
     {
         webrtc::MutexLock lock(&mutex_);
         callback = bitrate_callback_;
+        if (bps > 0 && !received_positive_rate_) {
+            received_positive_rate_ = true;
+            refresh = key_frame_request_callback_;
+        }
     }
-    if (callback) {
-        callback(parameters.bitrate.get_sum_bps(), parameters.framerate_fps);
-
+    // Deliver the budget first, then request a freshly encoded IDR. Transport
+    // readiness alone does not mean VideoStreamEncoder is no longer paused.
+    // Do not wait for Encode(delta) to discover the discarded startup IDR.
+    if (callback) { callback(bps, parameters.framerate_fps); }
+    if (refresh) {
+        SCP_LOGE("First positive encoder rate: bps=%d; requesting fresh keyframe", bps);
+        refresh();
     }
 }
 
