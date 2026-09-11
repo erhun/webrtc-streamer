@@ -97,3 +97,73 @@ ICE、WebRTC connected、选中路径和实际视频首帧。收到 track 不代
 
 验证范围：TypeScript 编译和模拟信令回归；无法从开发容器访问用户的 localhost，
 尚未复现或确认 50 秒等待的根因，也未完成浏览器/模拟器端到端计时。
+
+## 静止画面首次连接
+
+设备日志显示控制通道已打开后，视频 Encode 首次调用仍可能等待数十秒，
+而采集初始关键帧早于客户端连接。增加传输 kConnected 时的一次关键帧请求，
+不再依赖 Encode 收到画面后才触发反馈。首次关键帧请求在编码线程上重建采集，
+确保静止画面也重新提交输入；后续 PLI 仍使用 MediaCodec 同步帧请求，不重复重建。
+保留尚未处理的码率反馈。日志新增 Transport connected 和 Startup keyframe 时间点。
+
+此修改涉及 C++ 和 Java，必须重新构建 JNI 与 APK。轻量回归通过，尚未完成
+实际 native 构建和静止屏幕首帧验收，不能据此承诺首帧耗时。
+
+首帧进一步优化：合并同一轮反馈中的首次采集刷新与码率/分辨率调整。
+原流程先刷新，再重放已收到的码率，可能连续重建两次；现在先计算最新配置，
+只提交一次重建。仍保留静止画面刷新及后续关键帧请求。若新的反馈稍后才到达，
+仍可能需要后续调整，不承诺始终只有一次重建。轻量回归通过；需要实机对比
+1026ms 首帧基线，尤其检查静止画面、低码率和零码率恢复场景。
+
+## WebRTC 启动丢帧恢复
+
+上游 VideoStreamEncoder 在暂停时不会缓存 kNative 帧，恢复后会向 source 请求
+RequestRefreshFrame。原始 VideoBroadcaster 继承的实现为空。本次用
+RefreshVideoBroadcaster 把请求转发到会话内 JNI keyframe 回调，Java 仍在编码线程
+合并处理，未禁用零码率暂停、拥塞控制或全局丢帧。回调在 source 构造时绑定，
+关闭后由现有 Callbacks::Clear 阻止 Java 调用，不缓存或重发连接前旧画面。
+
+新增 Source refresh requested by WebRTC，以及 Source keyframe / Encode keyframe
+的 pts_us、RTP 时间戳，可逐帧匹配源端产生和 passthrough 接收。收到源刷新请求
+并不证明所有先前关键帧均因暂停丢弃；编码队列、重新配置等仍需逐帧日志验证。
+上游参考（当前主线，未取得用户指定 revision 的源码）：
+https://webrtc.googlesource.com/src/+/refs/heads/main/video/video_stream_encoder.cc
+https://webrtc.googlesource.com/src/+/refs/heads/main/api/video/video_source_interface.h
+
+轻量回归通过，但不涵盖完整 libwebrtc 编译和暂停恢复集成测试。需重新编译 JNI/APK，
+验证静止画面首次连接、零码率恢复和关闭期间刷新请求，以及首帧实际显示时间。
+
+## 实际 libwebrtc 源码核对：QP 与初始尺寸丢帧
+
+用户提供的 VideoStreamEncoderResourceManager::ConfigureQualityScaler 使用：
+(存在 QP 阈值 OR encoder_config.is_quality_scaling_allowed) AND
+encoder_info.is_qp_trusted.value_or(true)，并要求启用分辨率缩放。
+因此 scaling_settings=kOff 本身不是强制关闭条件。passthrough 未报告有效 QP，
+现在明确设置 is_qp_trusted=false，触发 UpdateQualityScalerSettings(nullopt)，
+进而通过 OnQualityScalerSettingsUpdated 禁用 InitialFrameDropper。
+
+同版本 DropDueToSize 在预算低于 300kbps 时使用 320x240 像素阈值，
+而 384x854 仍高于该阈值；初始最多丢四帧。这与日志现象相容，但缺少内部
+逐帧 DropReason，不能断言所有缺失帧都由该分支丢弃。
+本修改保留 Java 码率/分辨率自适应、WebRTC 暂停和常规拥塞控制。
+不将 has_trusted_rate_controller 设为 true，也不全局关闭丢帧。
+
+验证：现有轻量回归通过。缺完整 libwebrtc 工具链，native 编译及实测待完成。
+验收比较连接后 Source keyframe 与 Encode keyframe 的 pts_us、帧大小和首帧耗时；
+不能只凭源码修改推断性能收益。若仍缺帧，继续区分队列、暂停与媒体优化丢帧。
+
+## 两次重建：启动档位初始化
+
+日志显示第一次刷新仍用 8Mbps/原始尺寸，初始约 199kbps 反馈到达后再切换
+854/24fps，形成连续两次重建。首次关键帧请求时若尚无正码率反馈，现使用
+min(当前配置码率, 200000bps) 初始化 BitrateLadder 和采集尺寸/FPS；既有用户
+maxSize/maxFps 限制仍生效。200kbps 是保守启动预算，不是网络测量值。
+若同一轮已有正码率，直接采用真实反馈。零码率仍暂停转发。
+后续约 199kbps 不改变档位，使用 setParameters 更新码率，避免第二次重建。
+更高带宽仍按原 5 秒持续升档规则恢复画质；代价是首屏先使用较低清晰度。
+显示尺寸变化等独立重建不受影响，不保证任何网络条件下都只有一次重建。
+
+验证：新增初始 200kbps -> 199167/198333bps 不换档及后续高带宽升档回归通过；
+其余轻量回归通过。未进行完整 Android/native 构建或设备验收。
+实测检查连接后的 Capture configure 是否从两次变一次，以及浏览器首帧是否
+优于 469ms 基线；同时验证零码率恢复与画质升档。

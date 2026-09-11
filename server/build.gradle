@@ -32,20 +32,27 @@ dependencies {
 
 apply from: "$project.rootDir/config/android-checkstyle.gradle"
 
+// Resolve project APIs during configuration, never inside the cached task action.
+def nativeManifestFile = layout.projectDirectory.file('native-build.json').asFile
+def nativeRepositoryDir = rootProject.layout.projectDirectory.asFile
+def nativeVerificationFiles = files(
+        fileTree('src/main/cpp') { include '*.cc', '*.h' },
+        'src/main/jniLibs/arm64-v8a/libscrcpy_native.so',
+        'src/main/java/com/genymobile/scrcpy/device/NativeEncoderBridge.java')
+
 // Reject stale JNI binaries at packaging; tests and lint do not need native builds.
 tasks.configureEach { task ->
     if (task.name.startsWith('merge') && task.name.endsWith('NativeLibs')) {
+        task.inputs.file(nativeManifestFile).withPropertyName('nativeManifest')
+        task.inputs.files(nativeVerificationFiles).withPropertyName('nativeSourcesAndLibrary')
         task.doFirst {
-            def manifestFile = file('native-build.json')
+            def manifestFile = nativeManifestFile
             if (!manifestFile.exists()) {
                 throw new GradleException('Rebuild JNI first: python3 server/tools/build_native.py; see docs/streaming-fixes.md')
             }
             def manifest = new groovy.json.JsonSlurper().parse(manifestFile)
-            def requiredFiles = fileTree('src/main/cpp') { include '*.cc', '*.h' }.files
-            requiredFiles += file('src/main/jniLibs/arm64-v8a/libscrcpy_native.so')
-            requiredFiles += file('src/main/java/com/genymobile/scrcpy/device/NativeEncoderBridge.java')
-            requiredFiles.each { source ->
-                def relative = rootProject.projectDir.toPath().relativize(source.toPath()).toString()
+            nativeVerificationFiles.files.each { source ->
+                def relative = nativeRepositoryDir.toPath().relativize(source.toPath()).toString()
                 def digest = source.exists() ? java.security.MessageDigest.getInstance('SHA-256').digest(source.bytes).encodeHex().toString() : ''
                 if (manifest.files[relative] != digest) {
                     throw new GradleException('Stale native library: rebuild JNI before packaging (' + relative + ')')

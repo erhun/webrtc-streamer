@@ -44,7 +44,13 @@ bool EncodedVideoFrameBuffer::keyframe() const {
     return keyframe_;
 }
 
-EncodedVideoTrackSource::EncodedVideoTrackSource() : webrtc::VideoTrackSource(false) {
+void RefreshVideoBroadcaster::RequestRefreshFrame() {
+    SCP_LOGE("Source refresh requested by WebRTC");
+    if (refresh_) { refresh_(); }
+}
+
+EncodedVideoTrackSource::EncodedVideoTrackSource(std::function<void()> refresh)
+        : webrtc::VideoTrackSource(false), broadcaster_(std::move(refresh)) {
 }
 
 void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, int64_t pts_us, bool config, bool keyframe,
@@ -81,6 +87,10 @@ void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, 
             .set_rtp_timestamp(MediaClock::Rtp90k(capture_us))
             .build();
 
+    if (keyframe) {
+        SCP_LOGE("Source keyframe: pts_us=%lld rtp=%u bytes=%zu sinks=%d",
+                static_cast<long long>(capture_us), frame.rtp_timestamp(), len, broadcaster_.frame_wanted());
+    }
     broadcaster_.OnFrame(frame);
 }
 
@@ -105,6 +115,8 @@ void ScrcpyPassthroughEncoder::SetBitrateCallback(std::function<void(int, double
 }
 
 int32_t ScrcpyPassthroughEncoder::InitEncode(const webrtc::VideoCodec* codec, const Settings& settings) {
+    webrtc::MutexLock lock(&mutex_);
+    received_positive_rate_ = false;
     return WEBRTC_VIDEO_CODEC_OK;
 }
 
@@ -153,6 +165,10 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
         return WEBRTC_VIDEO_CODEC_ERROR;
     }
 
+    if (encoded->keyframe()) {
+        SCP_LOGE("Encode keyframe: pts_us=%lld rtp=%u bytes=%zu",
+                static_cast<long long>(frame.timestamp_us()), frame.rtp_timestamp(), encoded->size());
+    }
     webrtc::EncodedImage image;
     image.SetEncodedData(webrtc::EncodedImageBuffer::Create(encoded->data(), encoded->size()));
     image.SetRtpTimestamp(frame.rtp_timestamp());
@@ -191,19 +207,35 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
 
 void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters) {
     std::function<void(int, double)> callback;
+    std::function<void()> refresh;
+    const int bps = parameters.bitrate.get_sum_bps();
     {
         webrtc::MutexLock lock(&mutex_);
         callback = bitrate_callback_;
+        if (bps > 0 && !received_positive_rate_) {
+            received_positive_rate_ = true;
+            refresh = key_frame_request_callback_;
+        }
     }
-    if (callback) {
-        callback(parameters.bitrate.get_sum_bps(), parameters.framerate_fps);
-
+    // Deliver the budget first, then request a freshly encoded IDR. Transport
+    // readiness alone does not mean VideoStreamEncoder is no longer paused.
+    // Do not wait for Encode(delta) to discover the discarded startup IDR.
+    if (callback) { callback(bps, parameters.framerate_fps); }
+    if (refresh) {
+        SCP_LOGE("First positive encoder rate: bps=%d; requesting fresh keyframe", bps);
+        refresh();
     }
 }
 
 ScrcpyPassthroughEncoder::EncoderInfo ScrcpyPassthroughEncoder::GetEncoderInfo() const {
     EncoderInfo info;
     info.supports_native_handle = true;
+    // MediaCodec has already encoded these frames; this adapter does not report
+    // a valid QP. kOff alone does not veto quality scaling when the encoder
+    // configuration enables it. An explicit untrusted QP disables that scaler
+    // and its initial size-based frame drops in this libwebrtc version.
+    info.scaling_settings = webrtc::VideoEncoder::ScalingSettings(webrtc::VideoEncoder::ScalingSettings::kOff);
+    info.is_qp_trusted = false;
     info.is_hardware_accelerated = true;
     info.implementation_name = "MediaCodecPassthrough";
     return info;

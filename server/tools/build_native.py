@@ -43,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='native-', dir=server) as temporary:
         archives.extend(sorted((static / name).rglob('*.a')))
     built = temporary / output.name
     subprocess.run([clang, '--target=aarch64-linux-android23', '--sysroot=' + str(sysroot),
-                    '-shared', '-fuse-ld=lld', '-nostdlib++', '-Wl,--no-undefined',
+                    '-shared', '-fuse-ld=' + os.environ.get('CLANG_LD', 'lld'), '-nostdlib++', '-Wl,--no-undefined',
                     '-Wl,--start-group', *objects, *map(str, archives), '-Wl,--end-group',
                     '-o', str(built), '-llog', '-ldl', '-lm', '-lz'], check=True)
     built.replace(output)

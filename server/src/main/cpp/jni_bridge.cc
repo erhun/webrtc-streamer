@@ -78,7 +78,8 @@ JNIEXPORT jlong JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_na
     auto session = std::make_unique<Session>();
     auto cb = std::make_shared<Callbacks>(env, bridge);
     session->callbacks = cb;
-    session->video = webrtc::make_ref_counted<scrcpy::EncodedVideoTrackSource>();
+    session->video = webrtc::make_ref_counted<scrcpy::EncodedVideoTrackSource>(
+            [cb] { cb->Call([&](JNIEnv* e, jobject o) { e->CallVoidMethod(o, cb->keyframe); }); });
     session->pc = std::make_unique<scrcpy::ScrcpyPeerConnection>();
     if (!session->pc->Initialize(session->video, audio, String(env, turn), String(env, user), String(env, password),
             [cb](int bps, double fps) { cb->Call([&](JNIEnv* e, jobject o) { e->CallVoidMethod(o, cb->bitrate, bps, fps); }); },
