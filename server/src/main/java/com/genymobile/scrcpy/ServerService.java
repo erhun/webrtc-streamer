@@ -1,5 +1,7 @@
 package com.genymobile.scrcpy;
 
+import com.genymobile.scrcpy.wrappers.ClipboardManager;
+
 import android.app.Service;
 import android.content.Intent;
 import android.os.Handler;
@@ -10,6 +12,12 @@ public class ServerService extends Service {
     private Server.Session session;
     private int latestStartId;
     private final Handler main = new Handler(Looper.getMainLooper());
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        ClipboardManager.setApplicationContext(this);
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         latestStartId = startId;

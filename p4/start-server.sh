@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Start the protected service on a rootable development emulator.
 set -euo pipefail
+export TURN_URL='turn:10.20.9.39:3478'
+#export TURN_URL='turn:192.168.3.3:3478'
+export TURN_USER='turnuser'
+export TURN_PASSWORD='turnpassword'
 SERIAL="${SERIAL:-emulator-5554}"
 SIGNAL_PORT="${SIGNAL_PORT:-8080}"
 VIDEO_CODEC="${VIDEO_CODEC:-h264}"

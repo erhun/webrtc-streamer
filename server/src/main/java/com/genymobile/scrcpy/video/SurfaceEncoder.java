@@ -88,7 +88,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private void streamCapture() throws IOException, ConfigurationException {
         Codec codec = streamer.getCodec();
         MediaCodec mediaCodec = createMediaCodec(codec, encoderName);
-
         MediaCodecInfo.VideoCapabilities caps;
         int alignment;
         if (ignoreVideoEncoderConstraints) {
@@ -282,11 +281,13 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         do {
             applyFeedback(codec);
             int outputBufferId = codec.dequeueOutputBuffer(bufferInfo, 10000);
-            if (outputBufferId < 0) { continue; }
+            if (outputBufferId < 0) {
+                continue;
+            }
             try {
                 eos = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                 // On EOS, there might be data or not, depending on bufferInfo.size
-                if (outputBufferId >= 0 && bufferInfo.size > 0) {
+                if (bufferInfo.size > 0) {
                     boolean isConfig = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
                     if (!isConfig) {
                         // If this is not a config packet, then it contains a frame
@@ -308,9 +309,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     }
                 }
             } finally {
-                if (outputBufferId >= 0) {
-                    codec.releaseOutputBuffer(outputBufferId, false);
-                }
+                codec.releaseOutputBuffer(outputBufferId, false);
             }
         } while (!eos);
     }
@@ -442,8 +441,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         int bps;
         boolean keyFrame;
         synchronized (feedbackLock) {
-            bps = pendingBitrate; pendingBitrate = -1;
-            keyFrame = pendingKeyFrame; pendingKeyFrame = false;
+            bps = pendingBitrate;
+            pendingBitrate = -1;
+            keyFrame = pendingKeyFrame;
+            pendingKeyFrame = false;
         }
         // Merge startup refresh and bitrate adaptation into one reconfiguration.
         // Preserve the refresh for static displays, but configure the new codec
@@ -468,7 +469,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             if (!startupCaptureRefreshed || bps == 0) {
                 Ln.d("Startup bitrate feedback: bps=" + bps);
             }
-            if (bps == 0) { suspended = true; waitingForKeyFrame = true; }
+            if (bps == 0) {
+                suspended = true;
+                waitingForKeyFrame = true;
+            }
             else {
                 keyFrame |= suspended;
                 suspended = false;

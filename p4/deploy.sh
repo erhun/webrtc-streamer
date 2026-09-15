@@ -25,6 +25,7 @@ WEBRTC_ROOT="${WEBRTC_ROOT:-$ROOT/webrtc_materials}"
 APKSIGNER="$(find "$HOME/Library/Android/sdk/build-tools" -name apksigner 2>/dev/null | sort | tail -1)"
 ZIPALIGN="$(find "$HOME/Library/Android/sdk/build-tools" -name zipalign 2>/dev/null | sort | tail -1)"
 COTURN="/opt/homebrew/opt/coturn/bin/turnserver"
+WEBRTC_REVISION="35cfc6541cbce81b6ce097c5e78ff17fd3f8f65f"
 
 DO_BUILD=0
 DO_TURN=0
@@ -52,30 +53,30 @@ check_cmd adb
 # 1. 可选：重新构建
 # ============================================================
 if [ "$DO_BUILD" -eq 1 ]; then
-  log "重新构建 C++（clang 24 + relative vtable）"
-  [ -x "$CLANG" ] || { err "clang 24 不存在: $CLANG"; exit 1; }
-  [ -d "$WEBRTC_ROOT/static_libs/obj" ] || { err "libwebrtc 产物缺失"; exit 1; }
-
-  check_cmd python3
-  [ -n "${WEBRTC_REVISION:-}" ] || {
-    err "请设置 WEBRTC_REVISION 为当前 libwebrtc 产物对应的源码提交号"; exit 1;
-  }
-  mkdir -p "$TMP/native" "$TMP/apk"
+#  log "重新构建 C++（clang 24 + relative vtable）"
+#  [ -x "$CLANG" ] || { err "clang 24 不存在: $CLANG"; exit 1; }
+#  [ -d "$WEBRTC_ROOT/static_libs/obj" ] || { err "libwebrtc 产物缺失"; exit 1; }
+#
+#  check_cmd python3
+#  [ -n "${WEBRTC_REVISION:-}" ] || {
+#    err "请设置 WEBRTC_REVISION 为当前 libwebrtc 产物对应的源码提交号"; exit 1;
+#  }
+#  mkdir -p "$TMP/native" "$TMP/apk"
 
   # 确保 builtins + libunwind symlink
-  CLANG_LIB="$("$CLANG" -print-resource-dir)/lib/aarch64-unknown-linux-android23"
-  RTLIB="$NDK/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/19/lib/linux"
-  mkdir -p "$CLANG_LIB"
-  ln -sf "$RTLIB/libclang_rt.builtins-aarch64-android.a" "$CLANG_LIB/libclang_rt.builtins.a"
-  ln -sf "$RTLIB/aarch64/libunwind.a" "$CLANG_LIB/libunwind.a"
+#  CLANG_LIB="$("$CLANG" -print-resource-dir)/lib/aarch64-unknown-linux-android23"
+#  RTLIB="$NDK/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/19/lib/linux"
+#  mkdir -p "$CLANG_LIB"
+#  ln -sf "$RTLIB/libclang_rt.builtins-aarch64-android.a" "$CLANG_LIB/libclang_rt.builtins.a"
+#  ln -sf "$RTLIB/aarch64/libunwind.a" "$CLANG_LIB/libunwind.a"
 
   # Single source of truth: discovers current .cc files, links strictly, stages
   # the JNI library for Gradle and writes the source/ABI verification manifest.
-  WEBRTC_ROOT="$WEBRTC_ROOT" CLANG="$CLANG" CLANG_LD="$CLANG_LD" \
-    ANDROID_SYSROOT="$ANDROID_SYSROOT" WEBRTC_REVISION="$WEBRTC_REVISION" \
-    python3 "$ROOT/server/tools/build_native.py"
-  cp "$ROOT/server/src/main/jniLibs/arm64-v8a/libscrcpy_native.so" "$TMP/native/libscrcpy_native.so"
-  log "C++ 构建完成，JNI 库和校验清单已更新"
+#  WEBRTC_ROOT="$WEBRTC_ROOT" CLANG="$CLANG" CLANG_LD="$CLANG_LD" \
+#    ANDROID_SYSROOT="$ANDROID_SYSROOT" WEBRTC_REVISION="$WEBRTC_REVISION" \
+#    python3 "$ROOT/server/tools/build_native.py"
+#  cp "$ROOT/server/src/main/jniLibs/arm64-v8a/libscrcpy_native.so" "$TMP/native/libscrcpy_native.so"
+#  log "C++ 构建完成，JNI 库和校验清单已更新"
 
   # gradle 打包 + platform 签名
   log "gradle 打包 + platform 签名"
@@ -135,4 +136,7 @@ if [ "$DO_TURN" -eq 1 ]; then
   fi
 fi
 
+cd "/$ROOT/p4/web"
+npm ci
+npm run dev -- --host 0.0.0.0 --port 5173 --strictPort
 log "完成。浏览器访问 H5 客户端: http://localhost:5173/（需 vite dev，见 p4/web）"

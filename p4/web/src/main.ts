@@ -1,3 +1,4 @@
+import { mountMetrics } from './stream-metrics';
 import { ScrcpyClient } from './scrcpy-client';
 import { InputHandler } from './input';
 import './style.css';
@@ -66,6 +67,7 @@ function main(): void {
 
   let frameCallback: number | null = null;
   let client: ScrcpyClient | null = null;
+  mountMetrics(video, () => client?.peerConnection ?? null);
   let input: InputHandler | null = null;
   let dataChannel: RTCDataChannel | null = null;
 
