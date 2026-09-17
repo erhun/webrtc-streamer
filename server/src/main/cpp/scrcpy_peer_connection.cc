@@ -15,6 +15,8 @@
 #include "scrcpy_video_encoder_factory.h"
 
 #include <utility>
+#include "api/stats/rtc_stats_collector_callback.h"
+#include "api/stats/rtc_stats_report.h"
 
 #include <android/log.h>
 
@@ -23,6 +25,17 @@
 namespace scrcpy {
 
 namespace {
+class LatencyStatsCallback : public webrtc::RTCStatsCollectorCallback {
+public:
+    explicit LatencyStatsCallback(std::function<void(const webrtc::RTCStatsReport&)> callback)
+        : callback_(std::move(callback)) {}
+    void OnStatsDelivered(const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report) override {
+        callback_(*report);
+    }
+private:
+    std::function<void(const webrtc::RTCStatsReport&)> callback_;
+};
+
 
 class AnswerObserver : public webrtc::CreateSessionDescriptionObserver {
 public:
@@ -126,7 +139,13 @@ public:
     }
 
     void OnMessage(const webrtc::DataBuffer& buffer) override {
-        if (!lifetime_.expired()) { owner_->OnDataMessage(buffer.data.cdata(), buffer.data.size()); }
+        if (lifetime_.expired()) { return; }
+        if (!buffer.binary) {
+            const std::string request(reinterpret_cast<const char*>(buffer.data.cdata()), buffer.data.size());
+            if (request == "scrcpy.latency.v1") { owner_->RequestLatencyStats(); }
+            return; // Never feed telemetry text into the binary control parser.
+        }
+        owner_->OnDataMessage(buffer.data.cdata(), buffer.data.size());
     }
 
 private:
@@ -164,9 +183,10 @@ ScrcpyPeerConnection::~ScrcpyPeerConnection() {
     if (network_thread_ != nullptr) { network_thread_->Stop(); }
 }
 
-bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> track_source,
+bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSource> track_source,
         bool audio, const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
         std::function<void(int, double)> bitrate, std::function<void()> keyframe) {
+    video_source_ = track_source;
     keyframe_callback_ = keyframe;
     network_thread_ = webrtc::Thread::CreateWithSocketServer();
     worker_thread_ = webrtc::Thread::Create();
@@ -254,6 +274,33 @@ void ScrcpyPeerConnection::OnDataChannelOpened(webrtc::scoped_refptr<webrtc::Dat
     data_channel_observer_ = new DataChannelObserver(this);
     data_channel_->RegisterObserver(data_channel_observer_);
     SCP_LOGE("OnDataChannelOpened: label=%s", data_channel_->label().c_str());
+}
+
+void ScrcpyPeerConnection::RequestLatencyStats() {
+    if (stats_pending_ || !peer_connection_) { return; }
+    stats_pending_ = true;
+    auto weak = lifetime();
+    peer_connection_->GetStats(webrtc::make_ref_counted<LatencyStatsCallback>(
+        [this, weak](const webrtc::RTCStatsReport& report) {
+            // GetStats delivers on the signaling thread, as does destruction.
+            if (weak.expired()) { return; }
+            stats_pending_ = false;
+            if (!data_channel_ || data_channel_->state() != webrtc::DataChannelInterface::kOpen
+                    || data_channel_->buffered_amount() > 16384) { return; }
+            auto age = video_source_->CaptureAgeTotals();
+            std::string payload = "{\"type\":\"scrcpy.latency.v1\",\"captureUs\":"
+                + std::to_string(age.first) + ",\"captureFrames\":" + std::to_string(age.second)
+                + ",\"outbound\":[";
+            bool first = true;
+            for (const auto& stat : report) {
+                if (std::string(stat.type()) != "outbound-rtp") { continue; }
+                if (!first) { payload += ","; }
+                first = false;
+                payload += stat.ToJson();
+            }
+            payload += "]}";
+            data_channel_->Send(webrtc::DataBuffer(payload));
+        }));
 }
 
 void ScrcpyPeerConnection::OnDataMessage(const uint8_t* data, size_t len) {

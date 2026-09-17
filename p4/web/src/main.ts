@@ -1,3 +1,4 @@
+import { mountLatencyMetrics } from './latency-metrics';
 import { mountMetrics } from './stream-metrics';
 import { ScrcpyClient } from './scrcpy-client';
 import { InputHandler } from './input';
@@ -68,6 +69,7 @@ function main(): void {
   let frameCallback: number | null = null;
   let client: ScrcpyClient | null = null;
   mountMetrics(video, () => client?.peerConnection ?? null);
+  mountLatencyMetrics(video, () => client?.peerConnection ?? null, () => client?.dataChannel ?? null);
   let input: InputHandler | null = null;
   let dataChannel: RTCDataChannel | null = null;
 

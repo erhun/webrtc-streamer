@@ -22,7 +22,7 @@ public:
     std::weak_ptr<bool> lifetime() const { return lifetime_; }
     ~ScrcpyPeerConnection();
 
-    bool Initialize(webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> track_source,
+    bool Initialize(webrtc::scoped_refptr<EncodedVideoTrackSource> track_source,
             bool audio, const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
             std::function<void(int, double)> bitrate, std::function<void()> keyframe);
     void PushAudio(const uint8_t* data, size_t len, int64_t pts_us);
@@ -36,6 +36,7 @@ public:
 
     bool SendData(const uint8_t* data, size_t len);
     void OnDataChannelOpened(webrtc::scoped_refptr<webrtc::DataChannelInterface> data_channel);
+    void RequestLatencyStats();
     void OnDataMessage(const uint8_t* data, size_t len);
 
     void OnOffer(const std::string& sdp);
@@ -51,6 +52,8 @@ private:
     webrtc::scoped_refptr<PcmAudioSource> audio_source_;
     std::function<void()> closed_callback_;
     std::function<void()> keyframe_callback_;
+    webrtc::scoped_refptr<EncodedVideoTrackSource> video_source_;
+    bool stats_pending_ = false;
     bool startup_frame_requested_ = false;
     bool remote_description_set_ = false;
     std::vector<std::unique_ptr<webrtc::IceCandidate>> pending_ice_;

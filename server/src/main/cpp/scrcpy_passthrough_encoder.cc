@@ -5,6 +5,7 @@
 #include "modules/video_coding/include/video_error_codes.h"
 
 #include <utility>
+#include <time.h>
 
 #include <android/log.h>
 
@@ -65,6 +66,17 @@ void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, 
         SCP_LOGE("OnEncodedFrame: frame#%d key=%d len=%zu %dx%d", frame_count, keyframe, len, width, height);
     }
 
+    // Android screen PTS and CLOCK_MONOTONIC share the monotonic time base.
+    // Measure before Normalize(): its continuity offset is not capture time.
+    timespec now{};
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
+        const int64_t age = now.tv_sec * 1000000LL + now.tv_nsec / 1000 - pts_us;
+        if (pts_us > 0 && age >= 0) {
+            webrtc::MutexLock lock(&age_mutex_);
+            age_sum_us_ += age;
+            ++age_count_;
+        }
+    }
     width_ = width;
     height_ = height;
 
@@ -92,6 +104,11 @@ void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, 
                 static_cast<long long>(capture_us), frame.rtp_timestamp(), len, broadcaster_.frame_wanted());
     }
     broadcaster_.OnFrame(frame);
+}
+
+std::pair<uint64_t, uint64_t> EncodedVideoTrackSource::CaptureAgeTotals() {
+    webrtc::MutexLock lock(&age_mutex_);
+    return {age_sum_us_, age_count_};
 }
 
 webrtc::VideoSourceInterface<webrtc::VideoFrame>* EncodedVideoTrackSource::source() {
