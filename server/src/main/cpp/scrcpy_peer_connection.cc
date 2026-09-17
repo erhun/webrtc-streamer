@@ -5,6 +5,7 @@
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/enable_media.h"
 #include "api/environment/environment_factory.h"
+#include "api/field_trials.h"
 #include "api/jsep.h"
 #include "api/set_local_description_observer_interface.h"
 #include "api/set_remote_description_observer_interface.h"
@@ -199,7 +200,11 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         deps.network_thread = network_thread_.get();
         deps.worker_thread = worker_thread_.get();
         deps.signaling_thread = signaling_thread_.get();
-        auto env = webrtc::CreateEnvironment();
+        // Enable periodic ALR probing so the BWE measures real network capacity
+        // instead of staying application-limited by the passthrough encoder's
+        // content-dependent output rate.
+        static webrtc::FieldTrials field_trials("WebRTC-VideoRateControl/alr_probing:true/");
+        auto env = webrtc::CreateEnvironment(&field_trials);
         deps.env = env;
         deps.adm = webrtc::CreateAudioDeviceModule(env, webrtc::AudioDeviceModule::kDummyAudio);
         deps.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();

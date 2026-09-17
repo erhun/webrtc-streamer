@@ -25,6 +25,7 @@ export function streamMean(rows: Stat[], previous: Map<string, Stat>, sending: b
 export function mountLatencyMetrics(video: HTMLVideoElement,
     getPeer: () => RTCPeerConnection | null, getChannel: () => RTCDataChannel | null): void {
   const bar = document.createElement('div');
+  bar.className = 'stream-metrics';
   bar.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;padding:12px;color:#ddd;background:#19232e';
   const labels = ['采集帧龄', '发送排队', '接收缓冲', '分配码率', '配置码率', '编码输出'];
   const tips = ['屏幕 PTS 到服务端 JNI 入口，含编码；区间每帧均值',

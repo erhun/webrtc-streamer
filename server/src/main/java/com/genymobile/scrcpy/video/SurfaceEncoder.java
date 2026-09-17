@@ -453,14 +453,14 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         boolean reconfigure = keyFrame && !startupCaptureRefreshed;
         if (reconfigure) {
             startupCaptureRefreshed = true;
-            // Seed both the capture settings and ladder before the first refresh.
-            // The initial ~200kbps feedback can then update bitrate in-place,
-            // instead of forcing a second resolution/fps reconfiguration.
+            // Seed the ladder conservatively at 200kbps (level 0), but configure the encoder at
+            // the level's FULL bitrate via KEY_BIT_RATE. Dynamic setParameters() is not honored by
+            // some software encoders, so the encoder must get the full bitrate from the start.
             if (bps <= 0) {
                 int startupBitrate = Math.max(1, Math.min(videoBitRate, STARTUP_BITRATE));
                 bitrateLadder.update(startupBitrate);
                 BitrateLadder.Level startupLevel = bitrateLadder.current();
-                videoBitRate = startupBitrate;
+                videoBitRate = startupLevel.getBitRate();
                 adaptiveMaxSize = startupLevel.getMaxSize();
                 maxFps = requestedMaxFps > 0 ? Math.min(requestedMaxFps, startupLevel.getFps()) : startupLevel.getFps();
             }
