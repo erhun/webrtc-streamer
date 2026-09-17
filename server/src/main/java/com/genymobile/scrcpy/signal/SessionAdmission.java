@@ -18,10 +18,17 @@ public final class SessionAdmission {
     }
     public synchronized boolean claim(Object connection, String supplied, long nowMs) {
         if (consumed || nowMs > expiresAtMs || supplied == null
-                || !MessageDigest.isEqual(token, supplied.getBytes(StandardCharsets.UTF_8))) { return false; }
-        owner = connection; consumed = true; return true;
+                || !MessageDigest.isEqual(token, supplied.getBytes(StandardCharsets.UTF_8))) {
+            return false;
+        }
+        owner = connection;
+        consumed = true;
+        return true;
     }
-    public synchronized boolean owns(Object connection) { return owner == connection && owner != null; }
+    public synchronized boolean owns(Object connection) {
+        return owner == connection && owner != null;
+    }
+
     public synchronized boolean release(Object connection) {
         if (!owns(connection)) { return false; }
         owner = null; return true;

@@ -36,7 +36,9 @@ public final class SignalServer implements AutoCloseable {
         server = new WebSocketServer(new InetSocketAddress("127.0.0.1", port)) {
             @Override
             public void onOpen(WebSocket conn, ClientHandshake handshake) {
-                if (stopped || client != null || pending.size() >= 8) { conn.close(1008, "Session unavailable"); return; }
+                if (stopped || client != null || pending.size() >= 8) {
+                    conn.close(1008, "Session unavailable"); return;
+                }
                 pending.put(conn, now());
             }
             @Override
@@ -59,11 +61,15 @@ public final class SignalServer implements AutoCloseable {
         };
         server.setMaxPendingConnections(8);
     }
-    private static long now() { return System.nanoTime() / 1000000; }
+    private static long now() {
+        return System.nanoTime() / 1000000;
+    }
     public void start() {
         server.start();
         timer.scheduleWithFixedDelay(() -> {
-            if (client == null && now() - createdAt > 300000) { listener.onClosed(); return; }
+            if (client == null && now() - createdAt > 300000) {
+                listener.onClosed(); return;
+            }
             for (Map.Entry<WebSocket, Long> entry : pending.entrySet()) {
                 if (now() - entry.getValue() > 5000 && pending.remove(entry.getKey()) != null) {
                     entry.getKey().close(1008, "Authentication timeout");
@@ -79,7 +85,9 @@ public final class SignalServer implements AutoCloseable {
         try {
             send(new JSONObject().put("type", "ice").put("sdpMid", mid)
                     .put("sdpMLineIndex", index).put("candidate", sdp));
-        } catch (JSONException e) { listener.onClosed(); }
+        } catch (JSONException e) {
+            listener.onClosed();
+        }
     }
     private void send(JSONObject message) {
         WebSocket target = client;
@@ -88,8 +96,12 @@ public final class SignalServer implements AutoCloseable {
         catch (RuntimeException e) { listener.onClosed(); }
     }
     private void handleMessage(WebSocket conn, String text) {
-        if (stopped) { return; }
-        if (text.length() > 262144) { conn.close(1009, "Message too large"); return; }
+        if (stopped) {
+            return;
+        }
+        if (text.length() > 262144) {
+            conn.close(1009, "Message too large"); return;
+        }
         try {
             JSONObject msg = new JSONObject(text);
             String type = msg.getString("type");

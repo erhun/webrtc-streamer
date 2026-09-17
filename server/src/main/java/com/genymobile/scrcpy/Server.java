@@ -199,7 +199,9 @@ public final class Server {
                 }
             }
 
-            if (bridge != null) { signalServer = startSignalServer(bridge, options, session); }
+            if (bridge != null) {
+                signalServer = startSignalServer(bridge, options, session);
+            }
             Completion completion = new Completion(asyncProcessors.size());
             for (AsyncProcessor asyncProcessor : asyncProcessors) {
                 asyncProcessor.start((fatalError) -> {
