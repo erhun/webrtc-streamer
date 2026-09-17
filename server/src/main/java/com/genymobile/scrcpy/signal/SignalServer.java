@@ -62,7 +62,7 @@ public final class SignalServer implements AutoCloseable {
     private static long now() { return System.nanoTime() / 1000000; }
     public void start() {
         server.start();
-        timer.scheduleAtFixedRate(() -> {
+        timer.scheduleWithFixedDelay(() -> {
             if (client == null && now() - createdAt > 300000) { listener.onClosed(); return; }
             for (Map.Entry<WebSocket, Long> entry : pending.entrySet()) {
                 if (now() - entry.getValue() > 5000 && pending.remove(entry.getKey()) != null) {
