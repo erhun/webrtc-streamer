@@ -91,7 +91,11 @@ public:
     }
 
     void OnConnectionChange(webrtc::PeerConnectionInterface::PeerConnectionState state) override {
-        if (!lifetime_.expired() && state == webrtc::PeerConnectionInterface::PeerConnectionState::kFailed) {
+        if (lifetime_.expired()) { return; }
+        if (state == webrtc::PeerConnectionInterface::PeerConnectionState::kConnected) {
+            owner_->OnConnectionReady();
+        }
+        if (state == webrtc::PeerConnectionInterface::PeerConnectionState::kFailed) {
             owner_->OnConnectionClosed();
         }
     }
@@ -163,6 +167,7 @@ ScrcpyPeerConnection::~ScrcpyPeerConnection() {
 bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> track_source,
         bool audio, const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
         std::function<void(int, double)> bitrate, std::function<void()> keyframe) {
+    keyframe_callback_ = keyframe;
     network_thread_ = webrtc::Thread::CreateWithSocketServer();
     worker_thread_ = webrtc::Thread::Create();
     signaling_thread_ = webrtc::Thread::Create();
@@ -209,6 +214,13 @@ void ScrcpyPeerConnection::PushAudio(const uint8_t* data, size_t len, int64_t pt
 }
 void ScrcpyPeerConnection::SetClosedCallback(std::function<void()> callback) {
     signaling_thread_->BlockingCall([&] { closed_callback_ = std::move(callback); });
+}
+void ScrcpyPeerConnection::OnConnectionReady() {
+    if (!startup_frame_requested_) {
+        startup_frame_requested_ = true;
+        SCP_LOGE("Transport connected: request startup keyframe");
+        if (keyframe_callback_) { keyframe_callback_(); }
+    }
 }
 void ScrcpyPeerConnection::OnConnectionClosed() {
     if (closed_callback_) { closed_callback_(); }

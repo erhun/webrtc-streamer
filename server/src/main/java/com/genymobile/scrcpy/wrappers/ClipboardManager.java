@@ -7,9 +7,20 @@ import android.content.Context;
 
 public final class ClipboardManager {
     private final android.content.ClipboardManager manager;
+    private static volatile Context applicationContext;
+
+    // APK services must register clipboard listeners with their actual package
+    // and UID. FakeContext is reserved for the shell entry point.
+    public static void setApplicationContext(Context context) {
+        applicationContext = context.getApplicationContext();
+    }
 
     static ClipboardManager create() {
-        android.content.ClipboardManager manager = (android.content.ClipboardManager) FakeContext.get().getSystemService(Context.CLIPBOARD_SERVICE);
+        Context context = applicationContext;
+        if (context == null) {
+            context = FakeContext.get();
+        }
+        android.content.ClipboardManager manager = (android.content.ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
         if (manager == null) {
             // Some devices have no clipboard manager
             // <https://github.com/Genymobile/scrcpy/issues/1440>

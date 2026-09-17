@@ -28,6 +28,7 @@ public:
     void PushAudio(const uint8_t* data, size_t len, int64_t pts_us);
     void SetClosedCallback(std::function<void()> callback);
     void OnConnectionClosed();
+    void OnConnectionReady();
 
     void SetAnswerCallback(std::function<void(const std::string&)> callback);
     void SetIceCandidateCallback(std::function<void(const std::string&, int, const std::string&)> callback);
@@ -49,6 +50,8 @@ private:
     std::shared_ptr<bool> lifetime_ = std::make_shared<bool>(true);
     webrtc::scoped_refptr<PcmAudioSource> audio_source_;
     std::function<void()> closed_callback_;
+    std::function<void()> keyframe_callback_;
+    bool startup_frame_requested_ = false;
     bool remote_description_set_ = false;
     std::vector<std::unique_ptr<webrtc::IceCandidate>> pending_ice_;
     std::unique_ptr<webrtc::Thread> network_thread_;

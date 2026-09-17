@@ -45,71 +45,32 @@ $CLANG --version
 
 ---
 
-## 3. 编译（6 个源文件 → 6 个 .o）
+## 3. 编译与链接（统一入口）
 
-源文件在 `server/src/main/cpp/`：
-
-```
-scrcpy_passthrough_encoder.cc
-scrcpy_video_encoder_factory.cc
-scrcpy_opus_audio_encoder.cc
-scrcpy_audio_encoder_factory.cc
-scrcpy_peer_connection.cc
-jni_bridge.cc
-```
+当前使用内置 Opus 编码器；C++ 源码由构建脚本扫描，不再维护手写文件列表。
+请先按第 5 节配置编译器运行时，然后运行：
 
 ```bash
-CLANG=/Users/gorilla/test/webrtc/clang-llvmorg-24-init-3796-g20e97c4b-2/bin/clang++
-NDK=/Users/gorilla/Library/Android/sdk/ndk/28.2.13676358
-SYSROOT="$NDK/toolchains/llvm/prebuilt/darwin-x86_64/sysroot"
-
-for f in scrcpy_passthrough_encoder scrcpy_video_encoder_factory \
-         scrcpy_opus_audio_encoder scrcpy_audio_encoder_factory \
-         scrcpy_peer_connection jni_bridge; do
-  "$CLANG" --target=aarch64-linux-android23 --sysroot="$SYSROOT" \
-    -std=c++20 -fno-rtti -fno-exceptions -fPIC -nostdinc++ -DNDEBUG \
-    -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE \
-    -DWEBRTC_POSIX -DWEBRTC_ANDROID -DWEBRTC_LINUX -DWEBRTC_ARCH_ARM64 \
-    -fexperimental-relative-c++-abi-vtables \
-    -I webrtc_materials/third_party/libc++/src/include \
-    -I webrtc_materials/buildtools/third_party/libc++ \
-    -I webrtc_materials/include \
-    -I webrtc_materials/include/third_party/abseil-cpp \
-    -I server/src/main/cpp \
-    -Wno-nullability-completeness \
-    -c server/src/main/cpp/$f.cc -o tmp/native/$f.o
-done
+export CLANG=/Users/gorilla/test/webrtc/clang-llvmorg-24-init-3796-g20e97c4b-2/bin/clang++
+export CLANG_LD="$(dirname "$CLANG")/ld.lld"
+export ANDROID_SYSROOT=/Users/gorilla/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/sysroot
+export WEBRTC_ROOT="$PWD/webrtc_materials"
+# 填写生成当前静态库的真实 libwebrtc 源码提交号；不要填写本仓库的提交号。
+export WEBRTC_REVISION='<libwebrtc 源码提交号>'
+python3 server/tools/build_native.py
+./gradlew -p server assembleDebug
 ```
 
-每个标志都**不能省**（作用见 §7 踩坑）。
+## 4. 产物与部署
 
----
+统一脚本链接时使用 --no-undefined，输出：
 
-## 4. 链接（静态链接成 libscrcpy_native.so）
+- server/src/main/jniLibs/arm64-v8a/libscrcpy_native.so（Gradle 打包输入）
+- server/native-build.json（源码及产物哈希校验清单）
 
-```bash
-CLANG=/Users/gorilla/test/webrtc/clang-llvmorg-24-init-3796-g20e97c4b-2/bin/clang++
-CLANG_LD=/Users/gorilla/test/webrtc/clang-llvmorg-24-init-3796-g20e97c4b-2/bin/ld.lld
-SYSROOT="$NDK/toolchains/llvm/prebuilt/darwin-x86_64/sysroot"
-SL=webrtc_materials/static_libs/obj
-
-"$CLANG" --target=aarch64-linux-android23 --sysroot="$SYSROOT" \
-  -shared -fuse-ld="$CLANG_LD" -nostdlib++ \
-  -Wl,--start-group \
-    tmp/native/scrcpy_passthrough_encoder.o tmp/native/scrcpy_video_encoder_factory.o \
-    tmp/native/scrcpy_opus_audio_encoder.o tmp/native/scrcpy_audio_encoder_factory.o \
-    tmp/native/scrcpy_peer_connection.o tmp/native/jni_bridge.o \
-    "$SL/libwebrtc.a" \
-    $(find "$SL/third_party" -name "*.a") \
-    $(find "$SL/buildtools" -name "*.a") \
-  -Wl,--end-group \
-  -o libscrcpy_native.so -llog -ldl -lm -lz
-```
-
-**验证**（未定义 webrtc 符号必须为 0）：
-```bash
-llvm-nm -D --undefined-only libscrcpy_native.so | grep -c webrtc   # → 0
-```
+也可设置上述环境变量后运行 ./p4/deploy.sh --build，完成编译、打包、签名和部署；
+该入口会复制同一份 JNI 库到 tmp/native/libscrcpy_native.so。
+仅删除旧文件名或复用 tmp/native 的历史 .so 无法保证 Java/JNI 匹配。
 
 ---
 

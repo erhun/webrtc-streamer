@@ -673,7 +673,7 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
     /**
      * Schedule a call to set display power to off after a small delay.
      */
-    private static void scheduleDisplayPowerOff(int displayId) {
+    private void scheduleDisplayPowerOff(int displayId) {
         executor.schedule(() -> {
             Ln.i("Forcing display off");
             Device.setDisplayPower(displayId, false);

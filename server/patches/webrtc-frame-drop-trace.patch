@@ -1,0 +1,99 @@
+--- a/video/video_stream_encoder.cc
++++ b/video/video_stream_encoder.cc
+@@ -11,6 +11,10 @@
+ #include "video/video_stream_encoder.h"
+ 
+ #include <algorithm>
++#include <atomic>
++#if defined(WEBRTC_ANDROID)
++#include <android/log.h>
++#endif
+ #include <cstddef>
+ #include <cstdint>
+ #include <memory>
+@@ -99,6 +103,20 @@
+ 
+ namespace {
+ 
++// Temporary diagnostics; cap output per process to bound logging overhead.
++void ScrcpyTraceFrame(const char* stage, const VideoFrame& frame, int reason = -1) {
++#if defined(WEBRTC_ANDROID)
++  static std::atomic<unsigned> count{0};
++  if (count.fetch_add(1, std::memory_order_relaxed) >= 600) return;
++  __android_log_print(ANDROID_LOG_INFO, "scrcpy_drop",
++                     "%s pts_us=%lld rtp=%u size=%dx%d reason=%d",
++                     stage, static_cast<long long>(frame.timestamp_us()),
++                     frame.rtp_timestamp(), frame.width(), frame.height(), reason);
++#else
++  (void)stage; (void)frame; (void)reason;
++#endif
++}
++
+ // Time interval for logging frame counts.
+ const int64_t kFrameLogIntervalMs = 60000;
+ 
+@@ -1608,6 +1626,7 @@
+                                  const VideoFrame& video_frame) {
+   RTC_DCHECK_RUN_ON(encoder_queue_.get());
+ 
++  ScrcpyTraceFrame("incoming", video_frame);
+   VideoFrame incoming_frame = video_frame;
+ 
+   // In some cases, e.g., when the frame from decoder is fed to encoder,
+@@ -1663,6 +1682,8 @@
+   bool cwnd_frame_drop =
+       cwnd_frame_drop_interval_ &&
+       (cwnd_frame_counter_++ % cwnd_frame_drop_interval_.value() == 0);
++  if (queue_overload) ScrcpyTraceFrame("queue_overload", incoming_frame);
++  if (cwnd_frame_drop) ScrcpyTraceFrame("cwnd_drop", incoming_frame);
+   if (!queue_overload && !cwnd_frame_drop) {
+     MaybePrepareVideoFrame(incoming_frame, post_time.us());
+   } else {
+@@ -1977,6 +1998,7 @@
+   }
+ 
+   if (DropDueToSize(video_frame.size())) {
++    ScrcpyTraceFrame("drop_size", video_frame);
+     RTC_LOG(LS_INFO) << "Dropping frame. Too large for target bitrate.";
+     stream_resource_manager_.OnFrameDroppedDueToSize();
+     // Storing references to a native buffer risks blocking frame capture.
+@@ -1995,6 +2017,7 @@
+   stream_resource_manager_.OnMaybeEncodeFrame();
+ 
+   if (EncoderPaused()) {
++    ScrcpyTraceFrame("paused", video_frame);
+     // Storing references to a native buffer risks blocking frame capture.
+     if (video_frame.video_frame_buffer()->type() !=
+         VideoFrameBuffer::Type::kNative) {
+@@ -2022,6 +2045,7 @@
+       !encoder_info_.has_trusted_rate_controller;
+   frame_dropper_.Enable(frame_dropping_enabled);
+   if (frame_dropping_enabled && frame_dropper_.DropFrame()) {
++    ScrcpyTraceFrame("drop_media_optimization", video_frame);
+     RTC_LOG(LS_VERBOSE)
+         << "Drop Frame: "
+            "target bitrate "
+@@ -2035,6 +2059,7 @@
+     return;
+   }
+ 
++  ScrcpyTraceFrame("encode_dispatch", video_frame);
+   EncodeVideoFrame(video_frame, time_when_posted_us);
+ }
+ 
+@@ -2050,6 +2075,7 @@
+   // the send streams will be recreated and current VideoStreamEncoder will no
+   // longer be used.
+   if (encoder_fallback_requested_ || !encoder_initialized_) {
++    ScrcpyTraceFrame("encoder_not_ready", video_frame);
+     return;
+   }
+ 
+@@ -2745,6 +2771,7 @@
+ void VideoStreamEncoder::ProcessDroppedFrame(
+     const VideoFrame& frame,
+     VideoStreamEncoderObserver::DropReason reason) {
++  ScrcpyTraceFrame("dropped", frame, static_cast<int>(reason));
+   accumulated_update_rect_.Union(frame.update_rect());
+   accumulated_update_rect_is_valid_ &= frame.has_update_rect();
+   stream_resource_manager_.OnFrameDropped(reason);

@@ -27,11 +27,11 @@ public final class BitrateLadder {
     }
 
     private static final Level[] LEVELS = {
-            new Level(1920, 60, 10_000_000),
-            new Level(1280, 60, 5_000_000),
-            new Level(1280, 30, 2_500_000),
-            new Level(960, 30, 1_500_000),
             new Level(854, 24, 1_000_000),
+            new Level(960, 30, 1_500_000),
+            new Level(1280, 30, 2_500_000),
+            new Level(1280, 60, 5_000_000),
+            new Level(1920, 60, 10_000_000),
     };
 
     private static final double DOWNSCALE_FACTOR = 0.8;

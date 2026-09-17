@@ -61,6 +61,9 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
     private boolean pendingKeyFrame;
+    private boolean startupCaptureRefreshed;
+    // Conservative bootstrap budget, not a measured network capacity.
+    private static final int STARTUP_BITRATE = 200_000;
     private int adaptiveMaxSize;
     private final float requestedMaxFps;
     private boolean suspended;
@@ -85,7 +88,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private void streamCapture() throws IOException, ConfigurationException {
         Codec codec = streamer.getCodec();
         MediaCodec mediaCodec = createMediaCodec(codec, encoderName);
-
         MediaCodecInfo.VideoCapabilities caps;
         int alignment;
         if (ignoreVideoEncoderConstraints) {
@@ -132,6 +134,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     videoConstraints = next;
                 }
                 MediaFormat format = createFormat(codec.getMimeType(), videoBitRate, maxFps, codecOptions);
+                Ln.d("Capture configure: resetReasons=" + resetReasons + " bitrate=" + videoBitRate
+                        + " maxSize=" + adaptiveMaxSize + " maxFps=" + maxFps);
                 capture.prepare();
                 Size size = capture.getSize();
 
@@ -272,14 +276,18 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
 
         boolean eos = false;
+        boolean loggedFirstOutput = false;
+        boolean loggedFirstKey = false;
         do {
             applyFeedback(codec);
             int outputBufferId = codec.dequeueOutputBuffer(bufferInfo, 10000);
-            if (outputBufferId < 0) { continue; }
+            if (outputBufferId < 0) {
+                continue;
+            }
             try {
                 eos = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                 // On EOS, there might be data or not, depending on bufferInfo.size
-                if (outputBufferId >= 0 && bufferInfo.size > 0) {
+                if (bufferInfo.size > 0) {
                     boolean isConfig = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
                     if (!isConfig) {
                         // If this is not a config packet, then it contains a frame
@@ -289,15 +297,19 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
 
                     ByteBuffer codecBuffer = codec.getOutputBuffer(outputBufferId);
                     boolean key = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                    if (!isConfig && (!loggedFirstOutput || (key && !loggedFirstKey))) {
+                        Ln.d("Codec output: key=" + key + " bytes=" + bufferInfo.size
+                                + " suspended=" + suspended + " waitingForKeyFrame=" + waitingForKeyFrame);
+                        loggedFirstOutput = true;
+                        loggedFirstKey |= key;
+                    }
                     if (isConfig || (!suspended && (!waitingForKeyFrame || key))) {
                         streamer.writePacket(codecBuffer, bufferInfo);
                         if (key) { waitingForKeyFrame = false; }
                     }
                 }
             } finally {
-                if (outputBufferId >= 0) {
-                    codec.releaseOutputBuffer(outputBufferId, false);
-                }
+                codec.releaseOutputBuffer(outputBufferId, false);
             }
         } while (!eos);
     }
@@ -429,11 +441,38 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         int bps;
         boolean keyFrame;
         synchronized (feedbackLock) {
-            bps = pendingBitrate; pendingBitrate = -1;
-            keyFrame = pendingKeyFrame; pendingKeyFrame = false;
+            bps = pendingBitrate;
+            pendingBitrate = -1;
+            keyFrame = pendingKeyFrame;
+            pendingKeyFrame = false;
+        }
+        // Merge startup refresh and bitrate adaptation into one reconfiguration.
+        // Preserve the refresh for static displays, but configure the new codec
+        // with the latest bitrate/size instead of immediately resetting it again.
+        boolean reconfigure = keyFrame && !startupCaptureRefreshed;
+        if (reconfigure) {
+            startupCaptureRefreshed = true;
+            // Seed both the capture settings and ladder before the first refresh.
+            // The initial ~200kbps feedback can then update bitrate in-place,
+            // instead of forcing a second resolution/fps reconfiguration.
+            if (bps <= 0) {
+                int startupBitrate = Math.max(1, Math.min(videoBitRate, STARTUP_BITRATE));
+                bitrateLadder.update(startupBitrate);
+                BitrateLadder.Level startupLevel = bitrateLadder.current();
+                videoBitRate = startupBitrate;
+                adaptiveMaxSize = startupLevel.getMaxSize();
+                maxFps = requestedMaxFps > 0 ? Math.min(requestedMaxFps, startupLevel.getFps()) : startupLevel.getFps();
+            }
+            Ln.d("Startup keyframe: refreshing capture");
         }
         if (bps >= 0) {
-            if (bps == 0) { suspended = true; waitingForKeyFrame = true; }
+            if (!startupCaptureRefreshed || bps == 0) {
+                Ln.d("Startup bitrate feedback: bps=" + bps);
+            }
+            if (bps == 0) {
+                suspended = true;
+                waitingForKeyFrame = true;
+            }
             else {
                 keyFrame |= suspended;
                 suspended = false;
@@ -441,18 +480,25 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 BitrateLadder.Level level = bitrateLadder.current();
                 videoBitRate = Math.max(1, Math.min(bps, level.getBitRate()));
                 float nextFps = requestedMaxFps > 0 ? Math.min(requestedMaxFps, level.getFps()) : level.getFps();
-                boolean reconfigure = levelChanged || adaptiveMaxSize != level.getMaxSize() || nextFps != maxFps;
+                boolean adaptationReset = levelChanged || adaptiveMaxSize != level.getMaxSize() || nextFps != maxFps;
+                if (adaptationReset) {
+                    Ln.d("Bitrate reconfigure: bps=" + bps + " size=" + adaptiveMaxSize + "->" + level.getMaxSize()
+                            + " fps=" + maxFps + "->" + nextFps);
+                }
+                reconfigure |= adaptationReset;
                 maxFps = nextFps;
                 adaptiveMaxSize = level.getMaxSize();
-                if (reconfigure) {
-                    captureControl.reset(CaptureControl.RESET_REASON_BITRATE_CHANGED);
-                    synchronized (feedbackLock) { pendingKeyFrame = true; }
-                    return;
+                if (!reconfigure) {
+                    Bundle params = new Bundle();
+                    params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, videoBitRate);
+                    codec.setParameters(params);
                 }
-                Bundle params = new Bundle();
-                params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, videoBitRate);
-                codec.setParameters(params);
             }
+        }
+        if (reconfigure) {
+            captureControl.reset(CaptureControl.RESET_REASON_BITRATE_CHANGED);
+            synchronized (feedbackLock) { pendingKeyFrame = true; }
+            return;
         }
         if (keyFrame && !captureControl.isResetRequested()) {
             Bundle params = new Bundle();
