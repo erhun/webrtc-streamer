@@ -280,7 +280,7 @@ void ScrcpyPeerConnection::RequestLatencyStats() {
     if (stats_pending_ || !peer_connection_) { return; }
     stats_pending_ = true;
     auto weak = lifetime();
-    peer_connection_->GetStats(webrtc::make_ref_counted<LatencyStatsCallback>(
+    auto callback = webrtc::make_ref_counted<LatencyStatsCallback>(
         [this, weak](const webrtc::RTCStatsReport& report) {
             // GetStats delivers on the signaling thread, as does destruction.
             if (weak.expired()) { return; }
@@ -300,7 +300,8 @@ void ScrcpyPeerConnection::RequestLatencyStats() {
             }
             payload += "]}";
             data_channel_->Send(webrtc::DataBuffer(payload));
-        }));
+        });
+    peer_connection_->GetStats(callback.get());
 }
 
 void ScrcpyPeerConnection::OnDataMessage(const uint8_t* data, size_t len) {
