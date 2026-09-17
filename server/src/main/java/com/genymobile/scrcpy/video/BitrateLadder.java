@@ -42,7 +42,8 @@ public final class BitrateLadder {
     private long upgradeSinceMs = -1;
 
     public BitrateLadder() {
-        this(0);
+        // Start at the highest level; the first bandwidth feedback adapts it down.
+        this(LEVELS.length - 1);
     }
 
     public BitrateLadder(int initialLevel) {
@@ -56,17 +57,24 @@ public final class BitrateLadder {
     public boolean update(int bps) { return update(bps, System.nanoTime() / 1000000); }
     public boolean update(int bps, long nowMs) {
         int newLevel = level;
-        while (newLevel < LEVELS.length - 1 && bps < LEVELS[newLevel].bitRate * DOWNSCALE_FACTOR) {
-            newLevel++;
-        }
-        while (newLevel > 0 && bps > LEVELS[newLevel - 1].bitRate * UPSCALE_FACTOR) {
+        // Downgrade immediately when bandwidth falls below the current level (0.8 hysteresis)
+        while (newLevel > 0 && bps < LEVELS[newLevel].bitRate * DOWNSCALE_FACTOR) {
             newLevel--;
         }
-        if (newLevel < level) {
+        // Upgrade when bandwidth exceeds the current level by a 1.2x headroom
+        while (newLevel < LEVELS.length - 1 && bps > LEVELS[newLevel].bitRate * UPSCALE_FACTOR) {
+            newLevel++;
+        }
+        boolean upgrade = newLevel > level;
+        if (upgrade) {
+            // Upgrades must be sustained for 5 seconds to avoid flapping
             if (upgradeSinceMs < 0) { upgradeSinceMs = nowMs; }
             if (nowMs - upgradeSinceMs < 5000) { return false; }
-        } else { upgradeSinceMs = -1; }
+        } else {
+            upgradeSinceMs = -1;
+        }
         if (newLevel != level) {
+            // Enforce a minimum 1-second interval between level changes
             if (lastChangeMs != Long.MIN_VALUE && nowMs - lastChangeMs < 1000) { return false; }
             lastChangeMs = nowMs;
             upgradeSinceMs = -1;
