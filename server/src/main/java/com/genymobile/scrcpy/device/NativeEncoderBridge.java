@@ -34,6 +34,11 @@ public final class NativeEncoderBridge implements AutoCloseable {
     public synchronized void pushEncodedVideoFrame(ByteBuffer buffer, long pts, boolean config, boolean key, int width, int height) {
         if (handle != 0) { nativePushVideo(handle, copy(buffer), pts, config, key, width, height); }
     }
+    public synchronized void reportVideoBitrate(int bps) {
+        if (handle != 0) { nativeVideoBitrate(handle, bps); }
+    }
+    private native void nativeVideoBitrate(long handle, int bps);
+
     public synchronized void pushPcm(ByteBuffer buffer, long pts) {
         if (handle != 0) { nativePushPcm(handle, copy(buffer), pts); }
     }

@@ -8,6 +8,7 @@
 
 #include "scrcpy_pcm_audio_source.h"
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -25,6 +26,7 @@ public:
     bool Initialize(webrtc::scoped_refptr<EncodedVideoTrackSource> track_source,
             bool audio, const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
             std::function<void(int, double)> bitrate, std::function<void()> keyframe);
+    void SetConfiguredVideoBitrate(int bps) { configured_bps_.store(bps); }
     void PushAudio(const uint8_t* data, size_t len, int64_t pts_us);
     void SetClosedCallback(std::function<void()> callback);
     void OnConnectionClosed();
@@ -53,6 +55,8 @@ private:
     std::function<void()> closed_callback_;
     std::function<void()> keyframe_callback_;
     webrtc::scoped_refptr<EncodedVideoTrackSource> video_source_;
+    std::atomic<int> allocated_bps_{-1};
+    std::atomic<int> configured_bps_{-1};
     bool stats_pending_ = false;
     bool startup_frame_requested_ = false;
     bool remote_description_set_ = false;

@@ -153,6 +153,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     captureStarted = true;
 
                     mediaCodec.start();
+                    streamer.reportVideoBitrate(videoBitRate);
                     mediaCodecStarted = true;
 
                     // Set the MediaCodec instance to "interrupt" (by signaling an EOS) on reset
@@ -478,10 +479,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 suspended = false;
                 boolean levelChanged = bitrateLadder.update(bps);
                 BitrateLadder.Level level = bitrateLadder.current();
-                // Encode at the level's full bitrate instead of clamping to the BWE estimate:
-                // a passthrough encoder under-producing (clamped by bps) makes the sender look
-                // application-limited, which locks the BWE and prevents the ladder from upscaling.
-                videoBitRate = level.getBitRate();
+                videoBitRate = Math.max(1, Math.min(bps, level.getBitRate()));
                 float nextFps = requestedMaxFps > 0 ? Math.min(requestedMaxFps, level.getFps()) : level.getFps();
                 boolean adaptationReset = levelChanged || adaptiveMaxSize != level.getMaxSize() || nextFps != maxFps;
                 if (adaptationReset) {
@@ -495,6 +493,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     Bundle params = new Bundle();
                     params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, videoBitRate);
                     codec.setParameters(params);
+                    streamer.reportVideoBitrate(videoBitRate);
                 }
             }
         }

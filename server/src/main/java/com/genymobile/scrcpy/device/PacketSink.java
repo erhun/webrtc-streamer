@@ -9,6 +9,8 @@ import java.nio.ByteBuffer;
 
 public interface PacketSink {
 
+    default void reportVideoBitrate(int bps) { }
+
     Codec getCodec();
 
     void writeAudioHeader() throws IOException;

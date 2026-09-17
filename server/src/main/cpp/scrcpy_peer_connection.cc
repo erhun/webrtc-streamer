@@ -15,6 +15,7 @@
 #include "scrcpy_video_encoder_factory.h"
 
 #include <utility>
+#include <time.h>
 #include "api/stats/rtc_stats_collector_callback.h"
 #include "api/stats/rtc_stats_report.h"
 
@@ -203,7 +204,11 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         deps.adm = webrtc::CreateAudioDeviceModule(env, webrtc::AudioDeviceModule::kDummyAudio);
         deps.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
         deps.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
-        deps.video_encoder_factory = std::make_unique<ScrcpyVideoEncoderFactory>(bitrate, keyframe);
+        deps.video_encoder_factory = std::make_unique<ScrcpyVideoEncoderFactory>(
+            [this, bitrate](int bps, double fps) {
+                allocated_bps_.store(bps);
+                if (bitrate) { bitrate(bps, fps); }
+            }, keyframe);
         webrtc::EnableMedia(deps);
         factory_ = webrtc::PeerConnectionFactory::Create(std::move(deps));
         if (factory_ == nullptr) { return; }
@@ -288,8 +293,15 @@ void ScrcpyPeerConnection::RequestLatencyStats() {
             if (!data_channel_ || data_channel_->state() != webrtc::DataChannelInterface::kOpen
                     || data_channel_->buffered_amount() > 16384) { return; }
             auto age = video_source_->CaptureAgeTotals();
+            timespec now{};
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            const int64_t sample_us = now.tv_sec * 1000000LL + now.tv_nsec / 1000;
             std::string payload = "{\"type\":\"scrcpy.latency.v1\",\"captureUs\":"
                 + std::to_string(age.first) + ",\"captureFrames\":" + std::to_string(age.second)
+                + ",\"allocatedBps\":" + std::to_string(allocated_bps_.load())
+                + ",\"configuredBps\":" + std::to_string(configured_bps_.load())
+                + ",\"encodedBytes\":" + std::to_string(video_source_->EncodedBytes())
+                + ",\"sampleUs\":" + std::to_string(sample_us)
                 + ",\"outbound\":[";
             bool first = true;
             for (const auto& stat : report) {

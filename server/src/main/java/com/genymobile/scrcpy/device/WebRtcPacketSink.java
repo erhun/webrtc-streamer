@@ -24,6 +24,11 @@ public class WebRtcPacketSink implements PacketSink {
     }
 
     @Override
+    public void reportVideoBitrate(int bps) {
+        if (video) { bridge.reportVideoBitrate(bps); }
+    }
+
+    @Override
     public Codec getCodec() {
         return codec;
     }

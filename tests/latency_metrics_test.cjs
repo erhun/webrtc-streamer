@@ -15,3 +15,8 @@ assert.equal(streamMean([{id:'r',kind:'video',jitterBufferDelay:1,jitterBufferEm
 assert.equal(streamMean([{id:'r',kind:'video',jitterBufferDelay:3,jitterBufferEmittedCount:20}],cache,false), 200);
 assert.equal(streamMean([],cache,false), null);
 console.log('Latency metrics counter tests passed');
+
+// Encoded bytes / server monotonic microseconds -> bits per second.
+assert.equal(meanDelta(250000, 2000000, 125000, 1000000, 8000000), 1000000);
+assert.equal(meanDelta(125000, 2000000, 125000, 1000000, 8000000), 0);
+assert.equal(meanDelta(125000, 1000000, 125000, 1000000, 8000000), null);

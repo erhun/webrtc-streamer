@@ -77,6 +77,7 @@ void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, 
             ++age_count_;
         }
     }
+    encoded_bytes_.fetch_add(len);
     width_ = width;
     height_ = height;
 

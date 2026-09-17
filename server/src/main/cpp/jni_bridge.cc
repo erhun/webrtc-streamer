@@ -120,6 +120,11 @@ JNIEXPORT void JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nat
     s->video->OnEncodedFrame(reinterpret_cast<const uint8_t*>(bytes), size, pts, config, key, width, height);
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
 }
+JNIEXPORT void JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nativeVideoBitrate(
+        JNIEnv*, jobject, jlong handle, jint bps) {
+    auto* s = Get(handle);
+    if (s) { s->pc->SetConfiguredVideoBitrate(bps); }
+}
 JNIEXPORT void JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nativePushPcm(
         JNIEnv* env, jobject, jlong handle, jbyteArray data, jlong pts) {
     auto* s = Get(handle); if (!s) { return; }

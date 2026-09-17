@@ -14,6 +14,7 @@
 
 #include "media_clock.h"
 #include <cstdint>
+#include <atomic>
 #include <functional>
 #include <vector>
 #include <utility>
@@ -57,6 +58,7 @@ public:
     void OnEncodedFrame(const uint8_t* annexb, size_t len, int64_t pts_us, bool config, bool keyframe, int width, int height);
 
     std::pair<uint64_t, uint64_t> CaptureAgeTotals();
+    uint64_t EncodedBytes() const { return encoded_bytes_.load(); }
 
 protected:
     webrtc::VideoSourceInterface<webrtc::VideoFrame>* source() override;
@@ -65,6 +67,7 @@ private:
     webrtc::Mutex age_mutex_;
     uint64_t age_sum_us_ = 0;
     uint64_t age_count_ = 0;
+    std::atomic<uint64_t> encoded_bytes_{0};
     MediaClock clock_;
     RefreshVideoBroadcaster broadcaster_;
     std::vector<uint8_t> sps_pps_;
