@@ -248,13 +248,21 @@ void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters)
 ScrcpyPassthroughEncoder::EncoderInfo ScrcpyPassthroughEncoder::GetEncoderInfo() const {
     EncoderInfo info;
     info.supports_native_handle = true;
-    // MediaCodec has already encoded these frames; this adapter does not report a
-    // valid QP. Reporting is_qp_trusted=true (even though QP is not actually valid)
-    // avoids VideoStreamEncoder's qp_untrusted path, which otherwise caps
-    // stream.max_bitrate_bps to a resolution-based default table and prevents the
-    // bitrate ladder from upscaling. The quality scaler stays off via kOff.
+    // QP is unavailable for externally encoded MediaCodec frames. Keep the
+    // QP-based quality scaler disabled without accepting WebRTC's default
+    // QP-untrusted resolution caps (384x854 interpolates to ~1037 kbps,
+    // below the Java ladder's 1200 kbps upgrade threshold).
     info.scaling_settings = webrtc::VideoEncoder::ScalingSettings(webrtc::VideoEncoder::ScalingSettings::kOff);
-    info.is_qp_trusted = true;
+    info.is_qp_trusted = false;
+    // This is a capability ceiling, NOT a requested or minimum sending rate.
+    // The Java ladder owns resolution adaptation and still clamps MediaCodec
+    // output targets to SetRates. Equal endpoints keep interpolation flat;
+    // resolutions above the last endpoint use its ceiling as well.
+    // Fields: pixels, minimum start bps, minimum bps, maximum bps.
+    info.resolution_bitrate_limits = {
+        {1, 0, 30000, 20000000},
+        {8192 * 8192, 0, 30000, 20000000},
+    };
     info.is_hardware_accelerated = true;
     info.implementation_name = "MediaCodecPassthrough";
     return info;
