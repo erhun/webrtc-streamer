@@ -105,7 +105,9 @@ public final class Server {
         boolean tunnelForward = options.isTunnelForward();
         boolean control = options.getControl();
         boolean video = options.getVideo();
-        boolean audio = options.getAudio();
+        // Video-only WebRTC sessions isolate receiver buffering from A/V sync.
+        // Disable capture and track creation together; muting playback is insufficient.
+        boolean audio = options.getAudio() && options.getSignalPort() == 0;
         boolean sendDummyByte = options.getSendDummyByte();
 
         Workarounds.apply();
@@ -133,6 +135,7 @@ public final class Server {
                 }
                 bridge = new NativeEncoderBridge();
                 bridge.setClosedCallback(session::stop);
+                Ln.i("WebRTC audio disabled: video-only session");
                 bridge.open(audio, options.getTurnUrl(), options.getTurnUser(), options.getTurnPassword());
             }
 
