@@ -6,6 +6,7 @@
 #include "api/enable_media.h"
 #include "api/environment/environment_factory.h"
 #include "api/field_trials.h"
+#include "api/units/time_delta.h"
 #include "api/jsep.h"
 #include "api/set_local_description_observer_interface.h"
 #include "api/set_remote_description_observer_interface.h"
@@ -110,8 +111,9 @@ public:
         if (state == webrtc::PeerConnectionInterface::PeerConnectionState::kConnected) {
             owner_->OnConnectionReady();
         }
-        if (state == webrtc::PeerConnectionInterface::PeerConnectionState::kFailed) {
-            owner_->OnConnectionClosed();
+        if (state == webrtc::PeerConnectionInterface::PeerConnectionState::kFailed
+                || state == webrtc::PeerConnectionInterface::PeerConnectionState::kDisconnected) {
+            owner_->OnConnectionInterrupted();
         }
     }
     void OnIceGatheringChange(webrtc::PeerConnectionInterface::IceGatheringState new_state) override {
@@ -246,11 +248,24 @@ void ScrcpyPeerConnection::SetClosedCallback(std::function<void()> callback) {
     signaling_thread_->BlockingCall([&] { closed_callback_ = std::move(callback); });
 }
 void ScrcpyPeerConnection::OnConnectionReady() {
-    if (!startup_frame_requested_) {
-        startup_frame_requested_ = true;
-        SCP_LOGE("Transport connected: request startup keyframe");
-        if (keyframe_callback_) { keyframe_callback_(); }
-    }
+    recovering_ = false;
+    ++recovery_generation_;
+    SCP_LOGE("Transport connected: request fresh keyframe");
+    if (keyframe_callback_) { keyframe_callback_(); }
+}
+void ScrcpyPeerConnection::OnConnectionInterrupted() {
+    if (recovering_) { return; }
+    recovering_ = true;
+    const auto generation = ++recovery_generation_;
+    auto weak = lifetime();
+    SCP_LOGE("Transport interrupted: waiting up to 45s for ICE recovery");
+    signaling_thread_->PostDelayedTask([this, weak, generation] {
+        if (weak.expired()) { return; }
+        if (recovering_ && recovery_generation_ == generation) {
+            SCP_LOGE("Transport recovery timed out");
+            OnConnectionClosed();
+        }
+    }, webrtc::TimeDelta::Seconds(45));
 }
 void ScrcpyPeerConnection::OnConnectionClosed() {
     if (closed_callback_) { closed_callback_(); }
@@ -335,6 +350,7 @@ void ScrcpyPeerConnection::OnOffer(const std::string& sdp) {
     if (desc == nullptr) {
         return;
     }
+    remote_description_set_ = false;
     peer_connection_->SetRemoteDescription(
             std::move(desc),
             webrtc::make_ref_counted<RemoteDescriptionObserver>(this));

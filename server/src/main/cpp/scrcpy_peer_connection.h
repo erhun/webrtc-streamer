@@ -7,6 +7,7 @@
 #include "rtc_base/thread.h"
 
 #include "scrcpy_pcm_audio_source.h"
+#include <cstdint>
 #include <functional>
 #include <atomic>
 #include <memory>
@@ -31,6 +32,7 @@ public:
     void SetClosedCallback(std::function<void()> callback);
     void OnConnectionClosed();
     void OnConnectionReady();
+    void OnConnectionInterrupted();
 
     void SetAnswerCallback(std::function<void(const std::string&)> callback);
     void SetIceCandidateCallback(std::function<void(const std::string&, int, const std::string&)> callback);
@@ -58,7 +60,8 @@ private:
     std::atomic<int> allocated_bps_{-1};
     std::atomic<int> configured_bps_{-1};
     bool stats_pending_ = false;
-    bool startup_frame_requested_ = false;
+    uint64_t recovery_generation_ = 0;
+    bool recovering_ = false;
     bool remote_description_set_ = false;
     std::vector<std::unique_ptr<webrtc::IceCandidate>> pending_ice_;
     std::unique_ptr<webrtc::Thread> network_thread_;

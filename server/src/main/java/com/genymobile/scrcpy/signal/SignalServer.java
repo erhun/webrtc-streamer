@@ -28,7 +28,8 @@ public final class SignalServer implements AutoCloseable {
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
     private volatile WebSocket client;
     private volatile boolean stopped;
-    private boolean offered;
+    private volatile boolean offerPending;
+    private volatile boolean sessionStarted;
     private final long createdAt = now();
     public SignalServer(int port, String token, Listener listener) {
         this.listener = listener;
@@ -36,7 +37,7 @@ public final class SignalServer implements AutoCloseable {
         server = new WebSocketServer(new InetSocketAddress("0.0.0.0", port)) {
             @Override
             public void onOpen(WebSocket conn, ClientHandshake handshake) {
-                if (stopped || client != null || pending.size() >= 8) {
+                if (stopped || pending.size() >= 8) {
                     conn.close(1008, "Session unavailable"); return;
                 }
                 pending.put(conn, now());
@@ -44,9 +45,11 @@ public final class SignalServer implements AutoCloseable {
             @Override
             public void onClose(WebSocket conn, int code, String reason, boolean remote) {
                 pending.remove(conn);
-                if (admission.release(conn)) {
-                    client = null;
-                    if (!stopped) { listener.onClosed(); }
+                synchronized (admission) {
+                    if (admission.release(conn, now())) {
+                        client = null;
+                        Ln.i("Signaling disconnected: code=" + code + " remote=" + remote + "; waiting for recovery");
+                    }
                 }
             }
             @Override
@@ -67,7 +70,9 @@ public final class SignalServer implements AutoCloseable {
     public void start() {
         server.start();
         timer.scheduleWithFixedDelay(() -> {
-            if (client == null && now() - createdAt > 300000) {
+            if (admission.recoveryExpired(now()) || (client == null && now() - createdAt > 300000
+                    && !sessionStarted)) {
+                Ln.i("Signaling session expired without recovery");
                 listener.onClosed(); return;
             }
             for (Map.Entry<WebSocket, Long> entry : pending.entrySet()) {
@@ -78,6 +83,7 @@ public final class SignalServer implements AutoCloseable {
         }, 1, 1, TimeUnit.SECONDS);
     }
     public void sendAnswer(String sdp) {
+        offerPending = false;
         try { send(new JSONObject().put("type", "answer").put("sdp", sdp)); }
         catch (JSONException e) { listener.onClosed(); }
     }
@@ -93,7 +99,7 @@ public final class SignalServer implements AutoCloseable {
         WebSocket target = client;
         if (stopped || target == null || !target.isOpen()) { return; }
         try { target.send(message.toString()); }
-        catch (RuntimeException e) { listener.onClosed(); }
+        catch (RuntimeException e) { target.close(1011, "Signaling send failed"); }
     }
     private void handleMessage(WebSocket conn, String text) {
         if (stopped) {
@@ -105,18 +111,34 @@ public final class SignalServer implements AutoCloseable {
         try {
             JSONObject msg = new JSONObject(text);
             String type = msg.getString("type");
-            if (!admission.owns(conn)) {
-                if (!pending.containsKey(conn) || !"auth".equals(type)
-                        || !admission.claim(conn, msg.optString("token"), now())) {
-                    conn.close(1008, "Authentication rejected"); return;
+            synchronized (admission) {
+                if (!admission.owns(conn)) {
+                    boolean resumed = "resume".equals(type);
+                    boolean accepted = pending.containsKey(conn) && (resumed
+                            ? admission.resume(conn, msg.optString("token"), now())
+                            : "auth".equals(type) && admission.claim(conn, msg.optString("token"), now()));
+                    if (!accepted) {
+                        conn.close(1008, "Authentication rejected"); return;
+                    }
+                    WebSocket previous = client;
+                    pending.remove(conn);
+                    client = conn;
+                    sessionStarted = true;
+                    if (previous != null && previous != conn) { previous.close(1000, "Signaling resumed"); }
+                    conn.send(new JSONObject().put("type", "ready").put("resumeToken", admission.getResumeToken())
+                            .put("resumed", resumed).toString());
+                    return;
                 }
-                pending.remove(conn); client = conn;
-                conn.send("{\"type\":\"ready\"}"); return;
             }
-            if ("offer".equals(type)) {
+            if ("ping".equals(type)) {
+                conn.send("{\"type\":\"pong\"}");
+            } else if ("bye".equals(type)) {
+                Ln.i("Session stopped by client");
+                listener.onClosed();
+            } else if ("offer".equals(type)) {
                 synchronized (this) {
-                    if (offered) { conn.close(1008, "Offer already received"); return; }
-                    offered = true;
+                    if (offerPending) { conn.close(1008, "Offer already pending"); return; }
+                    offerPending = true;
                 }
                 listener.onOffer(msg.getString("sdp"));
             } else if ("ice".equals(type)) {

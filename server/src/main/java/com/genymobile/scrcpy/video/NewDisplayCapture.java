@@ -286,6 +286,7 @@ public class NewDisplayCapture extends SurfaceCapture {
 
     @Override
     public void stop() {
+        if (virtualDisplay != null) { virtualDisplay.setSurface(null); }
         if (glRunner != null) {
             glRunner.stopAndRelease();
             glRunner = null;

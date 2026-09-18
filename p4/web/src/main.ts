@@ -106,8 +106,8 @@ function main(): void {
     client = new ScrcpyClient({
       onDiagnostic: trace,
       onStateChange: (state) => {
-        status.textContent = state;
-        const busy = state === 'connecting' || state === 'connected';
+        status.textContent = state === 'reconnecting' ? '网络中断，正在重连…' : state;
+        const busy = state === 'connecting' || state === 'connected' || state === 'reconnecting';
         (document.querySelector('.connect-btn') as HTMLButtonElement).disabled = busy;
         (document.querySelector('.url-input') as HTMLInputElement).disabled = busy;
       },
@@ -124,11 +124,6 @@ function main(): void {
     });
     input = new InputHandler(send);
 
-    const urlInput = document.querySelector('.url-input') as HTMLInputElement;
-    const connectBtn = document.querySelector('.connect-btn') as HTMLButtonElement;
-    //connectBtn.disabled = true;
-    //urlInput.disabled = true;
-
     await client.connect({
       signalingUrl: url,
       iceTransportPolicy: queryParam('ice') === 'relay' ? 'relay' : 'all',
@@ -142,7 +137,7 @@ function main(): void {
 
   document.querySelector('.connect-btn')!.addEventListener('click', () => {
     const url = (document.querySelector('.url-input') as HTMLInputElement).value;
-    void connect(url).catch((error) => { status.textContent = String(error); client?.close(); });
+    void connect(url).catch((error) => { client?.close(); status.textContent = String(error); });
   });
 
   video.addEventListener('touchstart', (e) => input?.handleTouchStart(e, video), { passive: false });

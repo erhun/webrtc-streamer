@@ -9,8 +9,20 @@ public final class StreamingTest {
         Object a = new Object(), b = new Object();
         SessionAdmission admission = new SessionAdmission(token, 0);
         check(!admission.claim(a, "bad", 1)); check(admission.claim(a, token, 2));
-        check(!admission.claim(b, token, 3)); check(!admission.release(b)); check(admission.owns(a));
-        check(admission.release(a)); check(!admission.claim(b, token, 4));
+        check(!admission.claim(b, token, 3)); check(!admission.release(b, 3)); check(admission.owns(a));
+        check(admission.release(a, 4)); check(!admission.claim(b, token, 4));
+        String resume = admission.getResumeToken();
+        check(!resume.equals(token) && resume.length() == 64);
+        check(!admission.resume(b, token, 5)); check(!admission.resume(b, "bad", 5));
+        check(admission.resume(b, resume, 5)); check(admission.owns(b));
+        check(!admission.release(a, 6)); // Delayed close from the replaced socket.
+        check(admission.resume(a, resume, 7)); // Authenticated takeover of a half-open socket.
+        check(!admission.release(b, 8)); check(admission.owns(a));
+        check(admission.release(a, 10));
+        check(!admission.recoveryExpired(45010)); check(admission.recoveryExpired(45011));
+        check(!admission.resume(b, resume, 45011));
+        SessionAdmission fresh = new SessionAdmission(token, 0);
+        check(!fresh.resume(a, fresh.getResumeToken(), 1));
         check(!new SessionAdmission(token, 0).claim(a, token, 300001));
         BitrateLadder startup = new BitrateLadder();
         check(startup.update(200000, 0));

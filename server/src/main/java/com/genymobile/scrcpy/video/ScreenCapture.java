@@ -176,6 +176,14 @@ public class ScreenCapture extends SurfaceCapture {
 
     @Override
     public void stop() {
+        if (display != null) {
+            SurfaceControl.destroyDisplay(display);
+            display = null;
+        }
+        if (virtualDisplay != null) {
+            virtualDisplay.release();
+            virtualDisplay = null;
+        }
         if (glRunner != null) {
             glRunner.stopAndRelease();
             glRunner = null;

@@ -2,11 +2,15 @@ package com.genymobile.scrcpy.signal;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 
 /** A token admits one connection once within five minutes of startup. */
 public final class SessionAdmission {
     private final byte[] token;
     private final long expiresAtMs;
+    public static final long RECOVERY_TIMEOUT_MS = 45000;
+    private final String resumeToken;
+    private long resumeUntilMs = Long.MAX_VALUE;
     private Object owner;
     private boolean consumed;
     public SessionAdmission(String token, long nowMs) {
@@ -15,6 +19,11 @@ public final class SessionAdmission {
         }
         this.token = token.getBytes(StandardCharsets.UTF_8);
         expiresAtMs = nowMs + 300000;
+        byte[] secret = new byte[32];
+        new SecureRandom().nextBytes(secret);
+        StringBuilder hex = new StringBuilder(64);
+        for (byte value : secret) { hex.append(String.format("%02x", value & 0xff)); }
+        resumeToken = hex.toString();
     }
     public synchronized boolean claim(Object connection, String supplied, long nowMs) {
         if (consumed || nowMs > expiresAtMs || supplied == null
@@ -25,12 +34,32 @@ public final class SessionAdmission {
         consumed = true;
         return true;
     }
+    public synchronized String getResumeToken() { return resumeToken; }
+
+    // Only the secret issued to the authenticated client can replace a stale socket.
+    // The initial login token remains single-use.
+    public synchronized boolean resume(Object connection, String supplied, long nowMs) {
+        if (!consumed || nowMs > resumeUntilMs || supplied == null
+                || !MessageDigest.isEqual(resumeToken.getBytes(StandardCharsets.UTF_8), supplied.getBytes(StandardCharsets.UTF_8))) {
+            return false;
+        }
+        owner = connection;
+        resumeUntilMs = Long.MAX_VALUE;
+        return true;
+    }
+
+    public synchronized boolean recoveryExpired(long nowMs) {
+        return consumed && owner == null && nowMs > resumeUntilMs;
+    }
+
     public synchronized boolean owns(Object connection) {
         return owner == connection && owner != null;
     }
 
-    public synchronized boolean release(Object connection) {
+    public synchronized boolean release(Object connection, long nowMs) {
         if (!owns(connection)) { return false; }
-        owner = null; return true;
+        owner = null;
+        resumeUntilMs = nowMs + RECOVERY_TIMEOUT_MS;
+        return true;
     }
 }

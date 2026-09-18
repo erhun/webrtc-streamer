@@ -211,7 +211,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                             // ignore (just in case)
                         }
                     }
-                    mediaCodec.reset();
+                    if (!stopped.get()) { mediaCodec.reset(); }
                     if (surface != null) {
                         surface.release();
                     }
