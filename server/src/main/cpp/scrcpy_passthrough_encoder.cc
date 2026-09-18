@@ -248,12 +248,13 @@ void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters)
 ScrcpyPassthroughEncoder::EncoderInfo ScrcpyPassthroughEncoder::GetEncoderInfo() const {
     EncoderInfo info;
     info.supports_native_handle = true;
-    // MediaCodec has already encoded these frames; this adapter does not report
-    // a valid QP. kOff alone does not veto quality scaling when the encoder
-    // configuration enables it. An explicit untrusted QP disables that scaler
-    // and its initial size-based frame drops in this libwebrtc version.
+    // MediaCodec has already encoded these frames; this adapter does not report a
+    // valid QP. Reporting is_qp_trusted=true (even though QP is not actually valid)
+    // avoids VideoStreamEncoder's qp_untrusted path, which otherwise caps
+    // stream.max_bitrate_bps to a resolution-based default table and prevents the
+    // bitrate ladder from upscaling. The quality scaler stays off via kOff.
     info.scaling_settings = webrtc::VideoEncoder::ScalingSettings(webrtc::VideoEncoder::ScalingSettings::kOff);
-    info.is_qp_trusted = false;
+    info.is_qp_trusted = true;
     info.is_hardware_accelerated = true;
     info.implementation_name = "MediaCodecPassthrough";
     return info;
