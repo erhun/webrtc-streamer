@@ -1,0 +1,17 @@
+const assert = require('node:assert/strict');
+const {configureVideoLatency} = require(process.argv[2]);
+const standard = {jitterBufferTarget:null, playoutDelayHint:1};
+configureVideoLatency(standard);
+assert.equal(standard.jitterBufferTarget,50);
+assert.equal(standard.playoutDelayHint,1);
+const legacy = {playoutDelayHint:1};
+configureVideoLatency(legacy);
+assert.equal(legacy.playoutDelayHint,.05);
+const unsupported = {};
+assert.match(configureVideoLatency(unsupported), /不支持/);
+assert.deepEqual(unsupported, {});
+const fallback = {set jitterBufferTarget(value) {throw new Error('unsupported');}, playoutDelayHint:1};
+configureVideoLatency(fallback);
+assert.equal(fallback.playoutDelayHint,.05);
+assert.match(configureVideoLatency({set playoutDelayHint(value) {throw new Error('denied');}}), /失败/);
+console.log('Receiver latency compatibility tests passed');

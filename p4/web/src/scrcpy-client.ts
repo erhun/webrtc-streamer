@@ -1,3 +1,4 @@
+import { configureVideoLatency } from './receiver-latency';
 interface IceServer { urls: string; username?: string; credential?: string; }
 export interface ConnectOptions { signalingUrl: string; sessionToken: string; iceServers: IceServer[]; iceTransportPolicy?: RTCIceTransportPolicy; }
 export type ClientState = 'idle' | 'connecting' | 'connected' | 'failed' | 'closed';
@@ -48,7 +49,9 @@ export class ScrcpyClient {
     pc.addTransceiver('audio', { direction: 'recvonly' });
     const stream = new MediaStream();
     pc.ontrack = (event) => {
-      if (current()) { trace(`收到 ${event.track.kind} 轨道（尚非首帧）`); stream.addTrack(event.track); this.callbacks.onVideoTrack(stream); }
+      if (current()) {
+        if (event.track.kind === 'video') trace(configureVideoLatency(event.receiver));
+        trace(`收到 ${event.track.kind} 轨道（尚非首帧）`); stream.addTrack(event.track); this.callbacks.onVideoTrack(stream); }
     };
     const ws = new WebSocket(options.signalingUrl); this.ws = ws;
     const send = (message: unknown): void => {

@@ -4,9 +4,11 @@ export function meanDelta(sum: number, count: number, oldSum: number, oldCount: 
   return (sum - oldSum) / (count - oldCount) * scale;
 }
 type Stat = { id: string; type: string; kind?: string; mediaType?: string;
-  totalPacketSendDelay: number; packetsSent: number; jitterBufferDelay: number; jitterBufferEmittedCount: number };
+  totalPacketSendDelay: number; packetsSent: number; jitterBufferDelay: number; jitterBufferEmittedCount: number;
+  jitterBufferTargetDelay: number; jitterBufferMinimumDelay: number; totalDecodeTime: number; framesDecoded: number };
 type Telemetry = { type: string; captureUs: number; captureFrames: number; allocatedBps: number; configuredBps: number; encodedBytes: number; sampleUs: number; outbound: Stat[] };
-export function streamMean(rows: Stat[], previous: Map<string, Stat>, sending: boolean): number | null {
+export function streamMean(rows: Stat[], previous: Map<string, Stat>, sending: boolean,
+    metric: 'jitterBufferDelay' | 'jitterBufferTargetDelay' | 'jitterBufferMinimumDelay' | 'totalDecodeTime' = 'jitterBufferDelay'): number | null {
   let sum = 0, count = 0;
   const next = new Map<string, Stat>();
   for (const row of rows) {
@@ -14,8 +16,8 @@ export function streamMean(rows: Stat[], previous: Map<string, Stat>, sending: b
     next.set(row.id, row);
     const old = previous.get(row.id);
     if (!old) continue;
-    const s = sending ? 'totalPacketSendDelay' : 'jitterBufferDelay';
-    const c = sending ? 'packetsSent' : 'jitterBufferEmittedCount';
+    const s = sending ? 'totalPacketSendDelay' : metric;
+    const c = sending ? 'packetsSent' : metric === 'totalDecodeTime' ? 'framesDecoded' : 'jitterBufferEmittedCount';
     if (meanDelta(row[s], row[c], old[s], old[c], 1) === null) continue;
     sum += row[s] - old[s]; count += row[c] - old[c];
   }
@@ -27,17 +29,20 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
   const bar = document.createElement('div');
   bar.className = 'stream-metrics';
   bar.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;padding:12px;color:#ddd;background:#19232e';
-  const labels = ['采集帧龄', '发送排队', '接收缓冲', '分配码率', '配置码率', '编码输出'];
+  const labels = ['采集帧龄', '发送排队', '接收缓冲', '分配码率', '配置码率', '编码输出', '目标缓冲', '最低缓冲', '解码耗时'];
   const tips = ['屏幕 PTS 到服务端 JNI 入口，含编码；区间每帧均值',
     '视频 RTP 包进入发送缓冲到发出；区间每包均值，不含网络传输',
     '浏览器视频抖动缓冲驻留；区间每帧均值，不含后续显示',
     'WebRTC SetRates 分配的视频预算，不是链路总带宽',
     'MediaCodec 最近成功配置的目标码率；暂停时可能保留旧配置',
-    'JNI 收到的视频编码字节增量，含关键帧参数集，不含 RTP 开销'];
+    'JNI 收到的视频编码字节增量，含关键帧参数集，不含 RTP 开销',
+    '浏览器统计的视频目标缓冲；区间每帧均值，不等于请求的 50ms',
+    '浏览器估计的最低视频缓冲；区间每帧均值',
+    '视频解码累计耗时增量除以解码帧数增量'];
   const nodes = labels.map((_, i) => { const n = document.createElement('span'); n.title = tips[i]; bar.append(n); return n; });
   video.closest('.stage')!.before(bar);
   const show = (i: number, value: number | null): void => {
-    nodes[i].textContent = `${labels[i]}：${value === null ? '—' : (i < 3 ? value.toFixed(1) + ' ms' : (value / 1000).toFixed(0) + ' kbps')}`;
+    nodes[i].textContent = `${labels[i]}：${value === null ? '—' : ((i < 3 || i >= 6) ? value.toFixed(1) + ' ms' : (value / 1000).toFixed(0) + ' kbps')}`;
   };
   const health = document.createElement('span');
   bar.append(health);
@@ -52,7 +57,8 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
   let owner: RTCPeerConnection | null = null, channel: RTCDataChannel | null = null;
   let previous: Telemetry | null = null, lastReply = 0, requestedAt = 0, busy = false;
   const outbound = new Map<string, Stat>(), inbound = new Map<string, Stat>();
-  const clear = (): void => { previous = null; outbound.clear(); inbound.clear(); lastReply = 0; requestedAt = 0; nodes.forEach((_, i) => show(i, null)); sendDelay = receiveDelay = null; updateHealth(); };
+  const detailCaches = [new Map<string, Stat>(), new Map<string, Stat>(), new Map<string, Stat>()];
+  const clear = (): void => { previous = null; outbound.clear(); inbound.clear(); detailCaches.forEach(cache => cache.clear()); lastReply = 0; requestedAt = 0; nodes.forEach((_, i) => show(i, null)); sendDelay = receiveDelay = null; updateHealth(); };
   const message = (event: MessageEvent): void => {
     if (typeof event.data !== 'string' || event.currentTarget !== getChannel() || owner !== getPeer()) return;
     try {
@@ -90,8 +96,15 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
       const rows: Stat[] = [];
       report.forEach(row => { if (row.type === 'inbound-rtp') rows.push(row as Stat); });
       receiveDelay = streamMean(rows, inbound, false);
-      show(2, receiveDelay); updateHealth();
-    } catch { inbound.clear(); show(2, null); receiveDelay = null; updateHealth(); }
+      show(2, receiveDelay);
+      const metrics = ['jitterBufferTargetDelay', 'jitterBufferMinimumDelay', 'totalDecodeTime'] as const;
+      metrics.forEach((metric, i) => show(6 + i, streamMean(rows, detailCaches[i], false, metric)));
+      updateHealth();
+    } catch {
+      if (pc !== getPeer()) return;
+      inbound.clear(); detailCaches.forEach(cache => cache.clear());
+      [2, 6, 7, 8].forEach(i => show(i, null)); receiveDelay = null; updateHealth();
+    }
     finally { busy = false; }
   }, 1000);
   window.addEventListener('pagehide', event => {

@@ -20,3 +20,17 @@ console.log('Latency metrics counter tests passed');
 assert.equal(meanDelta(250000, 2000000, 125000, 1000000, 8000000), 1000000);
 assert.equal(meanDelta(125000, 2000000, 125000, 1000000, 8000000), 0);
 assert.equal(meanDelta(125000, 1000000, 125000, 1000000, 8000000), null);
+
+// Optional receiver metrics: weighted deltas, missing counters and stream resets.
+for (const metric of ['jitterBufferTargetDelay', 'jitterBufferMinimumDelay', 'totalDecodeTime']) {
+  const previous = new Map();
+  const sample = (id, sum, count) => ({id, kind:'video', [metric]:sum,
+    jitterBufferEmittedCount:count, framesDecoded:count});
+  assert.equal(streamMean([sample('a',1,10)], previous, false, metric), null);
+  assert.equal(streamMean([sample('a',3,20)], previous, false, metric), 200);
+  assert.equal(streamMean([sample('a',3,20)], previous, false, metric), null);
+  assert.equal(streamMean([sample('a',undefined,30)], previous, false, metric), null);
+  assert.equal(streamMean([sample('b',10,100)], previous, false, metric), null);
+  assert.equal(streamMean([sample('b',0,0)], previous, false, metric), null);
+}
+console.log('Receiver buffer detail tests passed');

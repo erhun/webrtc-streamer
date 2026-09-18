@@ -27,3 +27,23 @@ H5 每秒采样；第一个样本只建立基线。无增量、断线、不支�
 播放延迟提示独立于原有 RTT/丢包连接质量：发送排队超过 150ms 标记发送积压；否则接收缓冲超过 200ms 标记缓冲偏高。这是诊断阈值，不是播放缓冲控制目标。
 
 部署 Java APK、JNI .so 和 H5 后，在同一动态画面连续观察 30–60 秒：先确认配置码率随分配预算调整，再观察发送排队下降后接收缓冲是否逐步下降。保留升档条件和浏览器自适应缓冲，不强制提高分辨率、不通过丢弃已编码参考帧排空队列。若发送排队已低而接收缓冲仍高，记录音视频接收统计后单独处理接收端。此改动不承诺达到固定延迟，尚需设备验证。
+
+### Video receiver target and detailed counters
+
+Each new video receiver requests a 50 ms jitter buffer target via
+`jitterBufferTarget`, falling back to Chromium's `playoutDelayHint = 0.05`
+(seconds) when necessary. Unsupported/rejected setters do not fail the session;
+the startup log reports the outcome. This is a request, not a hard upper bound.
+See https://w3c.github.io/webrtc-extensions/#dom-rtcrtpreceiver-jitterbuffertarget.
+
+The UI also shows target and minimum video buffer delay using interval deltas
+of `jitterBufferTargetDelay` and `jitterBufferMinimumDelay`, divided by
+`jitterBufferEmittedCount`. Decode time uses `totalDecodeTime / framesDecoded`
+interval deltas. All three are converted from seconds to milliseconds.
+Missing counters, counter resets, new streams and intervals without emitted or
+decoded frames display “—”. Reconnection clears every baseline.
+
+Compare the same content for at least five minutes with server audio still
+disabled. Record actual/target/minimum buffer delay and decode time alongside
+freeze behavior. A lower requested target does not guarantee lower actual delay.
+Only the H5 client needs rebuilding for this change.
