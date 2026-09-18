@@ -190,10 +190,21 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     alive = true;
                 } finally {
                     captureControl.setRunningMediaCodec(null);
+
                     if (captureStarted) {
                         capture.stop();
                     }
+
+                    if (captureStarted && mediaCodecStarted) {
+                        SystemClock.sleep(50);
+                    }
+
                     if (mediaCodecStarted) {
+                        try {
+                            mediaCodec.signalEndOfInputStream(); // 尝试干净结束流
+                        } catch (Exception e) {
+                            // ignore
+                        }
                         try {
                             mediaCodec.stop();
                         } catch (IllegalStateException e) {
@@ -207,8 +218,9 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 }
             } while (alive);
         } finally {
-            mediaCodec.release();
+            // 5. 调整释放顺序：先释放 capture，再释放 mediaCodec
             capture.release();
+            mediaCodec.release();
         }
     }
 
@@ -492,6 +504,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 if (!reconfigure) {
                     Bundle params = new Bundle();
                     params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, videoBitRate);
+                    params.putString(MediaFormat.KEY_MIME, streamer.getCodec().getMimeType());
                     codec.setParameters(params);
                     streamer.reportVideoBitrate(videoBitRate);
                 }
@@ -505,6 +518,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         if (keyFrame && !captureControl.isResetRequested()) {
             Bundle params = new Bundle();
             params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
+            params.putString(MediaFormat.KEY_MIME, streamer.getCodec().getMimeType());
             codec.setParameters(params);
         }
     }

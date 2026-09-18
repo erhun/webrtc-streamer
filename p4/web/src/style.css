@@ -99,7 +99,7 @@ body {
   color: #999;
 }
 
-.stream-metrics { display:flex; flex-wrap:wrap; gap:8px 20px; padding:10px 16px; background:#18212c; color:#e5edf7; font-size:14px; font-variant-numeric:tabular-nums; }
+.stream-metrics { display:flex; flex-wrap:wrap; gap:3px 20px; padding:0px; background:#18212c; color:#e5edf7; font-size:12px; font-variant-numeric:tabular-nums; }
 .stream-metrics span { white-space:nowrap; }
 .stream-metrics .quality[data-level="good"] { color:#86efac; }
 .stream-metrics .quality[data-level="fair"] { color:#fde68a; }

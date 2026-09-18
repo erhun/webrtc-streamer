@@ -107,7 +107,8 @@ public final class Server {
         boolean video = options.getVideo();
         // Video-only WebRTC sessions isolate receiver buffering from A/V sync.
         // Disable capture and track creation together; muting playback is insufficient.
-        boolean audio = options.getAudio() && options.getSignalPort() == 0;
+        //boolean audio = options.getAudio() && options.getSignalPort() == 0;
+        boolean audio = options.getAudio();
         boolean sendDummyByte = options.getSendDummyByte();
 
         Workarounds.apply();

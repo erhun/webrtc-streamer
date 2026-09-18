@@ -33,7 +33,7 @@ public final class SignalServer implements AutoCloseable {
     public SignalServer(int port, String token, Listener listener) {
         this.listener = listener;
         admission = new SessionAdmission(token, now());
-        server = new WebSocketServer(new InetSocketAddress("127.0.0.1", port)) {
+        server = new WebSocketServer(new InetSocketAddress("0.0.0.0", port)) {
             @Override
             public void onOpen(WebSocket conn, ClientHandshake handshake) {
                 if (stopped || client != null || pending.size() >= 8) {

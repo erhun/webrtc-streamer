@@ -21,7 +21,7 @@ export class ScrcpyClient {
       this.callbacks.onError('请输入有效的会话凭证'); this.callbacks.onStateChange('failed'); return;
     }
     const url = new URL(options.signalingUrl);
-    if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) {
+    if (url.protocol !== 'wss:' && !(url.protocol === 'ws:')) {
       this.callbacks.onError('远程连接需要 wss:// 地址'); this.callbacks.onStateChange('failed'); return;
     }
     this.callbacks.onStateChange('connecting');

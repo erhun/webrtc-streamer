@@ -30,7 +30,7 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
   const connectBar = el('div', 'connect-bar');
   const urlInput = el('input', 'url-input') as HTMLInputElement;
   urlInput.placeholder = 'ws://云机IP:8080';
-  urlInput.value = 'ws://localhost:8080';
+  urlInput.value = 'ws://10.20.9.39:8080';
   const connectBtn = el('button', 'connect-btn', '连接');
   const tokenInput = el('input', 'token-input') as HTMLInputElement;
   tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证'; tokenInput.autocomplete = 'off';
@@ -126,8 +126,8 @@ function main(): void {
 
     const urlInput = document.querySelector('.url-input') as HTMLInputElement;
     const connectBtn = document.querySelector('.connect-btn') as HTMLButtonElement;
-    connectBtn.disabled = true;
-    urlInput.disabled = true;
+    //connectBtn.disabled = true;
+    //urlInput.disabled = true;
 
     await client.connect({
       signalingUrl: url,
