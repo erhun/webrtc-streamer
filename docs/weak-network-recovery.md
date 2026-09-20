@@ -133,3 +133,26 @@ misleading retry using an already-consumed login token. Lightweight tests cover
 this distinction. The repeated real-device rejection still requires the complete
 H5 diagnostic sequence to identify its actual cause; passing mocked regressions
 is not proof that the deployed H5/APK/JNI combination supports refresh recovery.
+
+## Static-screen first frame after repeated reloads
+
+Each successful peer reset now rearms a capture refresh on the encoder thread.
+The refresh waits for a positive send bitrate and merges with bitrate/size
+reconfiguration. A sync-frame request alone may not produce fresh input when
+the display is static; the old one-time startup flag skipped this refresh for
+later peers.
+
+H5 also watches for the first rendered video frame. While the peer and control
+channel are connected and playback is active, it sends the existing RESET_VIDEO
+control message at most three times, at least two seconds apart. It stops on
+the first frame, page exit, connection termination, or the bounded timeout.
+
+Deploy the updated H5 bundle and Android Java application together. This
+incremental fix adds no JNI entry point and works with the already rebuilt
+native library supporting nativeResetPeer. It does not repair an older library
+that lacks that method.
+
+Regression coverage includes ten peer-reset cycles, positive-bitrate gating,
+first-frame cancellation, delayed readiness, and retry exhaustion. On a device,
+leave the display completely static and reload at least ten times without
+touching the emulator; verify a first frame appears on every connection.

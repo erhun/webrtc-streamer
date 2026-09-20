@@ -1,6 +1,7 @@
 import com.genymobile.scrcpy.device.DataChannelInputStream;
 import com.genymobile.scrcpy.signal.SessionAdmission;
 import com.genymobile.scrcpy.video.BitrateLadder;
+import com.genymobile.scrcpy.video.CaptureRefreshGate;
 import java.util.concurrent.atomic.AtomicBoolean;
 public final class StreamingTest {
     private static void check(boolean value) { if (!value) { throw new AssertionError(); } }
@@ -32,6 +33,17 @@ public final class StreamingTest {
         SessionAdmission fresh = new SessionAdmission(token, 0);
         check(!fresh.resume(a, fresh.getResumeToken(), 1));
         check(!new SessionAdmission(token, 0).claim(a, token, 300001));
+        CaptureRefreshGate refresh = new CaptureRefreshGate();
+        check(!refresh.consumeRefresh());
+        refresh.onBitrate(0); check(!refresh.consumeRefresh());
+        refresh.onBitrate(200000); check(refresh.consumeRefresh());
+        refresh.onBitrate(250000); check(!refresh.consumeRefresh());
+        for (int reload = 0; reload < 10; ++reload) {
+            refresh.newPeer(); check(!refresh.consumeRefresh());
+            refresh.onBitrate(0); check(!refresh.consumeRefresh());
+            refresh.onBitrate(30000); check(refresh.consumeRefresh());
+            check(!refresh.consumeRefresh());
+        }
         BitrateLadder startup = new BitrateLadder();
         check(startup.update(200000, 0));
         check(startup.current().getMaxSize() == 854 && startup.current().getFps() == 24);

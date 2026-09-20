@@ -7,6 +7,7 @@ public final class NativeEncoderBridge implements AutoCloseable {
     public interface Callback {
         void onBitrate(int bps, double fps);
         void onKeyFrameRequest();
+        default void onPeerReset() { }
     }
     public interface SignalCallback {
         void onAnswer(String sdp);
@@ -43,7 +44,12 @@ public final class NativeEncoderBridge implements AutoCloseable {
         if (handle != 0) { nativePushPcm(handle, copy(buffer), pts); }
     }
     public synchronized boolean resetPeer() {
-        try { return handle != 0 && nativeResetPeer(handle); }
+        try {
+            boolean reset = handle != 0 && nativeResetPeer(handle);
+            Callback target = callback;
+            if (reset && target != null) { target.onPeerReset(); }
+            return reset;
+        }
         catch (UnsatisfiedLinkError e) { return false; } // APK packaged with an older JNI library.
     }
     private native boolean nativeResetPeer(long session);

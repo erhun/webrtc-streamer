@@ -14,7 +14,7 @@ def run(*args):
 with tempfile.TemporaryDirectory(prefix='streaming-tests-', dir=root / 'tests') as temp:
     run(java, '-m', 'jdk.compiler/com.sun.tools.javac.Main', '-d', temp,
         source + 'device/NativeEncoderBridge.java', source + 'device/DataChannelInputStream.java',
-        source + 'signal/SessionAdmission.java', source + 'video/BitrateLadder.java', 'tests/StreamingTest.java', 'tests/ParseJava.java')
+        source + 'signal/SessionAdmission.java', source + 'video/CaptureRefreshGate.java', source + 'video/BitrateLadder.java', 'tests/StreamingTest.java', 'tests/ParseJava.java')
     run(java, '-cp', temp, 'StreamingTest')
     run(java, '-cp', temp, 'ParseJava', 'server/src/main/java')
     binary = str(Path(temp) / 'media-test')
@@ -25,6 +25,8 @@ with tempfile.TemporaryDirectory(prefix='streaming-tests-', dir=root / 'tests') 
     run(node, tsc, '-p', 'p4/web/tsconfig.json')
     run(node, tsc, 'p4/web/src/scrcpy-client.ts', '--target', 'ES2020', '--module', 'commonjs', '--outDir', temp, '--strict', '--skipLibCheck')
     run(node, 'tests/client_test.cjs', str(Path(temp) / 'scrcpy-client.js'))
+    run(node, tsc, 'p4/web/src/first-frame-recovery.ts', '--target', 'ES2020', '--module', 'commonjs', '--outDir', temp, '--strict')
+    run(node, 'tests/first_frame_recovery_test.cjs', str(Path(temp) / 'first-frame-recovery.js'))
     run(node, tsc, 'p4/web/src/latency-metrics.ts', '--target', 'ES2020', '--module', 'commonjs', '--outDir', temp, '--strict', '--skipLibCheck')
     run(node, 'tests/latency_metrics_test.cjs', str(Path(temp) / 'latency-metrics.js'))
 print('All dependency-light regressions passed')

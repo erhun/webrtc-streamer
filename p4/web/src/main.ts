@@ -1,3 +1,5 @@
+import { FirstFrameRecovery } from './first-frame-recovery';
+import { MessageType } from './control-message';
 import { readResumeSession } from './session-resume';
 import { mountLatencyMetrics } from './latency-metrics';
 import { mountMetrics } from './stream-metrics';
@@ -68,6 +70,7 @@ function main(): void {
   const { video, status } = buildUi();
 
   let frameCallback: number | null = null;
+  let stopFirstFrameRecovery = (): void => {};
   let client: ScrcpyClient | null = null;
   mountMetrics(video, () => client?.peerConnection ?? null);
   mountLatencyMetrics(video, () => client?.peerConnection ?? null, () => client?.dataChannel ?? null);
@@ -82,6 +85,7 @@ function main(): void {
     if (!url) {
       return;
     }
+    stopFirstFrameRecovery();
     client?.close();
     video.srcObject = null;
     const started = performance.now();
@@ -92,9 +96,29 @@ function main(): void {
       console.info('[startup]', message);
     };
     let firstFrame = false;
+    let recovery: FirstFrameRecovery | null = null;
+    const stopRecovery = (): void => { recovery?.stop(); };
+    stopFirstFrameRecovery = stopRecovery;
+    const startRecovery = (): void => {
+      if (firstFrame) { return; }
+      if (!recovery) {
+        recovery = new FirstFrameRecovery(
+          () => sessionClient.peerConnection?.connectionState === 'connected'
+            && sessionClient.dataChannel?.readyState === 'open'
+            && sessionClient.dataChannel.bufferedAmount === 0 && !video.paused,
+          () => {
+            const accepted = sessionClient.sendControlMessage(new Uint8Array([MessageType.RESET_VIDEO]));
+            if (accepted) { trace('首帧未到达，请求刷新采集'); }
+            return accepted;
+          },
+          () => trace('首帧恢复等待结束，请检查服务端关键帧日志'));
+      }
+      recovery.start();
+    };
     const rendered = (): void => {
       if (firstFrame) { return; }
       firstFrame = true;
+      stopRecovery();
       trace(`${Math.round(performance.now() - started)}ms 视频首帧已显示`);
     };
     if (frameCallback !== null) { video.cancelVideoFrameCallback(frameCallback); frameCallback = null; }
@@ -104,9 +128,11 @@ function main(): void {
     } else {
       (video as HTMLVideoElement).onloadeddata = rendered;
     }
-    client = new ScrcpyClient({
+    const sessionClient = new ScrcpyClient({
       onDiagnostic: trace,
       onStateChange: (state) => {
+        if (state === 'connected') { startRecovery(); }
+        else if (state === 'failed' || state === 'closed') { stopRecovery(); }
         status.textContent = state === 'reconnecting' ? '网络中断，正在重连…' : state;
         const busy = state === 'connecting' || state === 'connected' || state === 'reconnecting';
         (document.querySelector('.connect-btn') as HTMLButtonElement).disabled = busy;
@@ -118,11 +144,13 @@ function main(): void {
       },
       onDataChannelOpen: (channel) => {
         dataChannel = channel;
+        startRecovery();
       },
       onError: (message) => {
         status.textContent = `错误: ${message}`;
       },
     });
+    client = sessionClient;
     input = new InputHandler(send);
 
     await client.connect({
@@ -148,6 +176,7 @@ function main(): void {
     void connect(saved.url).catch((error) => { client?.close(); status.textContent = String(error); });
   };
   window.addEventListener('pagehide', () => {
+    stopFirstFrameRecovery();
     client?.suspend();
     client = null;
     input = null;

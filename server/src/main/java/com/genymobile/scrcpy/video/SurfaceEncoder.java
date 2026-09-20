@@ -61,9 +61,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
     private boolean pendingKeyFrame;
-    private boolean startupCaptureRefreshed;
-    // Conservative bootstrap budget, not a measured network capacity.
-    private static final int STARTUP_BITRATE = 200_000;
+    private boolean pendingPeerRefresh;
+    private final CaptureRefreshGate captureRefreshGate = new CaptureRefreshGate();
     private int adaptiveMaxSize;
     private final float requestedMaxFps;
     private boolean suspended;
@@ -448,38 +447,44 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     public void onKeyFrameRequest() {
         synchronized (feedbackLock) { pendingKeyFrame = true; }
     }
+    @Override
+    public void onPeerReset() {
+        synchronized (feedbackLock) {
+            pendingPeerRefresh = true;
+            pendingBitrate = -1; // Discard the previous peer's budget.
+            pendingKeyFrame = false;
+        }
+    }
     // Codec and capture mutations belong to the encoder thread, including EOS.
     private void applyFeedback(MediaCodec codec) {
         if (captureControl.isResetRequested()) { return; }
         int bps;
         boolean keyFrame;
+        boolean peerRefresh;
         synchronized (feedbackLock) {
             bps = pendingBitrate;
             pendingBitrate = -1;
             keyFrame = pendingKeyFrame;
             pendingKeyFrame = false;
+            peerRefresh = pendingPeerRefresh;
+            pendingPeerRefresh = false;
         }
-        // Merge startup refresh and bitrate adaptation into one reconfiguration.
-        // Preserve the refresh for static displays, but configure the new codec
-        // with the latest bitrate/size instead of immediately resetting it again.
-        boolean reconfigure = keyFrame && !startupCaptureRefreshed;
-        if (reconfigure) {
-            startupCaptureRefreshed = true;
-            // Seed the ladder conservatively at 200kbps (level 0), but configure the encoder at
-            // the level's FULL bitrate via KEY_BIT_RATE. Dynamic setParameters() is not honored by
-            // some software encoders, so the encoder must get the full bitrate from the start.
-            if (bps <= 0) {
-                int startupBitrate = Math.max(1, Math.min(videoBitRate, STARTUP_BITRATE));
-                bitrateLadder.update(startupBitrate);
-                BitrateLadder.Level startupLevel = bitrateLadder.current();
-                videoBitRate = startupLevel.getBitRate();
-                adaptiveMaxSize = startupLevel.getMaxSize();
-                maxFps = requestedMaxFps > 0 ? Math.min(requestedMaxFps, startupLevel.getFps()) : startupLevel.getFps();
-            }
-            Ln.d("Startup keyframe: refreshing capture");
+        if (peerRefresh) {
+            captureRefreshGate.newPeer();
+            suspended = true;
+            waitingForKeyFrame = true;
+        }
+        if (bps >= 0) { captureRefreshGate.onBitrate(bps); }
+        // A new peer needs an actual input frame, not only a request for an IDR
+        // on the next frame. Coalesce this refresh with bitrate reconfiguration.
+        boolean firstFrameRefresh = captureRefreshGate.consumeRefresh();
+        boolean reconfigure = firstFrameRefresh;
+        if (firstFrameRefresh) {
+            waitingForKeyFrame = true;
+            Ln.d("Peer first frame: positive send budget, refreshing capture");
         }
         if (bps >= 0) {
-            if (!startupCaptureRefreshed || bps == 0) {
+            if (firstFrameRefresh || bps == 0) {
                 Ln.d("Startup bitrate feedback: bps=" + bps);
             }
             if (bps == 0) {
