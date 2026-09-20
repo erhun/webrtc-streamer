@@ -14,6 +14,7 @@ import com.genymobile.scrcpy.util.IO;
 import com.genymobile.scrcpy.util.Ln;
 import com.genymobile.scrcpy.util.LogUtils;
 
+import android.annotation.SuppressLint;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -37,6 +38,25 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private static final int[] MAX_SIZE_FALLBACK = {2560, 1920, 1600, 1280, 1024, 800};
     private static final int MAX_CONSECUTIVE_ERRORS = 3;
 
+    /**
+     * 硬件编码器优先列表。
+     * 顺序：Qualcomm → Samsung → MediaTek → 通用 OMX 命名。
+     * 若设备不存在对应编码器，createByCodecName 会抛异常，自动跳过。
+     */
+    private static final String[] PREFERRED_HW_ENCODERS = {
+            "c2.qti.avc.encoder",
+            "c2.exynos.avc.encoder",
+            "c2.mtk.avc.encoder",
+            "OMX.qcom.video.encoder.avc",
+            "OMX.Exynos.avc.enc",
+            "OMX.MTK.VIDEO.ENCODER.AVC",
+    };
+
+    /**
+     * BitrateLadder 更新节流间隔，避免高频 onBitrate 回调打乱防抖计时。
+     */
+    private static final long LADDER_UPDATE_INTERVAL_MS = 100L;
+
     private final SurfaceCapture capture;
     private final PacketSink streamer;
     private final String encoderName;
@@ -44,6 +64,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private int videoBitRate;
     private final int maxSize;
     private float maxFps;
+    private final float requestedMaxFps;
     private final boolean downsizeOnError;
     private final int minSizeAlignment;
     private final boolean ignoreVideoEncoderConstraints;
@@ -63,9 +84,21 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private boolean pendingPeerRefresh;
     private final CaptureRefreshGate captureRefreshGate = new CaptureRefreshGate();
     private int adaptiveMaxSize;
-    private final float requestedMaxFps;
     private boolean suspended;
     private boolean waitingForKeyFrame;
+
+    /**
+     * targetFps：逻辑目标帧率，可在热更新路径动态调整。
+     * encoderFps：创建 MediaFormat 时使用的帧率，仅在编码器重建时更新。
+     * 二者分离，避免热更新污染编码器创建参数。
+     */
+    private float targetFps;
+    private float encoderFps;
+
+    /**
+     * BitrateLadder 节流计时器。
+     */
+    private long lastLadderUpdateMs = 0;
 
     private VideoConstraints videoConstraints;
 
@@ -76,6 +109,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         this.maxSize = options.getMaxSize();
         this.maxFps = options.getMaxFps();
         this.requestedMaxFps = maxFps;
+        this.targetFps = maxFps;
+        this.encoderFps = maxFps;
         this.codecOptions = options.getVideoCodecOptions();
         this.encoderName = options.getVideoEncoder();
         this.downsizeOnError = options.getDownsizeOnError();
@@ -128,9 +163,9 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     }
                     videoConstraints = next;
                 }
-                MediaFormat format = createFormat(codec.getMimeType(), videoBitRate, maxFps, codecOptions);
+                MediaFormat format = createFormat(codec.getMimeType(), videoBitRate, encoderFps, codecOptions);
                 Ln.d("Capture configure: resetReasons=" + resetReasons + " bitrate=" + videoBitRate
-                        + " maxSize=" + adaptiveMaxSize + " maxFps=" + maxFps);
+                        + " maxSize=" + adaptiveMaxSize + " maxFps=" + encoderFps);
                 capture.prepare();
                 Size size = capture.getSize();
 
@@ -262,18 +297,43 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         return 0;
     }
 
+    @SuppressLint("DefaultLocale")
     private void encode(MediaCodec codec, PacketSink streamer) throws IOException {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+
+        // ============ 统计字段 ============
+        long lastOutputNs = 0;
+        long windowStartNs = System.nanoTime();
+        int windowFrameCount = 0;
+        long totalEncodeCostNs = 0;
+        long maxEncodeCostNs = 0;
+        long dequeueBlockTotalNs = 0;
+        long dequeueBlockMaxNs = 0;
+        int dequeueBlockCount = 0;
+        int slowFrameCount = 0;  // 编码耗时 > 33ms 的帧数
+
+        // PTS → 输入时刻（System.nanoTime 基准）
+        final java.util.concurrent.ConcurrentHashMap<Long, Long> inputTimestampMap =
+                new java.util.concurrent.ConcurrentHashMap<>();
 
         boolean eos = false;
         boolean loggedFirstOutput = false;
         boolean loggedFirstKey = false;
+
         do {
             applyFeedback(codec);
+
+            long dequeueStartNs = System.nanoTime();
             int outputBufferId = codec.dequeueOutputBuffer(bufferInfo, 10000);
+            long dequeueCostNs = System.nanoTime() - dequeueStartNs;
+
             if (outputBufferId < 0) {
+                dequeueBlockTotalNs += dequeueCostNs;
+                if (dequeueCostNs > dequeueBlockMaxNs) dequeueBlockMaxNs = dequeueCostNs;
+                dequeueBlockCount++;
                 continue;
             }
+
             try {
                 eos = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                 if (bufferInfo.size > 0) {
@@ -285,14 +345,72 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
 
                     ByteBuffer codecBuffer = codec.getOutputBuffer(outputBufferId);
                     boolean key = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+
                     if (!isConfig && (!loggedFirstOutput || (key && !loggedFirstKey))) {
                         Ln.d("Codec output: key=" + key + " bytes=" + bufferInfo.size
                                 + " suspended=" + suspended + " waitingForKeyFrame=" + waitingForKeyFrame);
                         loggedFirstOutput = true;
                         loggedFirstKey |= key;
                     }
+
+                    // ============ 编码耗时统计 ============
+                    if (!isConfig) {
+                        long nowNs = System.nanoTime();
+
+                        // 1. 帧间隔
+                        if (lastOutputNs > 0) {
+                            long interFrameNs = nowNs - lastOutputNs;
+                            if (interFrameNs > 40_000_000L) {
+                                Ln.d("Encode slow: inter-frame=" + (interFrameNs / 1_000_000) + "ms");
+                            }
+                        }
+                        lastOutputNs = nowNs;
+
+                        // 2. input→output 真实延迟
+                        Long inputNs = inputTimestampMap.remove(bufferInfo.presentationTimeUs);
+                        long encodeCostNs = -1;
+                        if (inputNs != null) {
+                            encodeCostNs = nowNs - inputNs;
+                            totalEncodeCostNs += encodeCostNs;
+                            if (encodeCostNs > maxEncodeCostNs) maxEncodeCostNs = encodeCostNs;
+                            if (encodeCostNs > 33_000_000L) slowFrameCount++;
+                        }
+
+                        // 3. 窗口统计
+                        windowFrameCount++;
+                        if (windowFrameCount >= 30) {
+                            long windowDurationNs = nowNs - windowStartNs;
+                            double fps = windowFrameCount * 1_000_000_000.0 / windowDurationNs;
+                            long avgEncodeNs = totalEncodeCostNs / windowFrameCount;
+
+                            Ln.d(String.format(
+                                    "Encode stats: frames=%d duration=%dms fps=%.1f "
+                                            + "avgEncode=%dms maxEncode=%dms slowFrames=%d "
+                                            + "dequeueBlockAvg=%dms dequeueBlockMax=%dms",
+                                    windowFrameCount,
+                                    windowDurationNs / 1_000_000,
+                                    fps,
+                                    avgEncodeNs / 1_000_000,
+                                    maxEncodeCostNs / 1_000_000,
+                                    slowFrameCount,
+                                    dequeueBlockCount > 0 ? (dequeueBlockTotalNs / dequeueBlockCount / 1_000_000) : 0,
+                                    dequeueBlockMaxNs / 1_000_000));
+
+                            windowStartNs = nowNs;
+                            windowFrameCount = 0;
+                            totalEncodeCostNs = 0;
+                            maxEncodeCostNs = 0;
+                            dequeueBlockTotalNs = 0;
+                            dequeueBlockMaxNs = 0;
+                            dequeueBlockCount = 0;
+                            slowFrameCount = 0;
+                        }
+                    }
+
                     boolean bootstrap = !isConfig && captureRefreshGate.consumeBootstrapFrame(key);
-                    if (bootstrap) { Ln.d("Peer bootstrap: forwarding IDR to initialize native encoder"); }
+                    if (bootstrap) {
+                        Ln.d("Peer bootstrap: forwarding IDR to initialize native encoder");
+                    }
                     if (isConfig || bootstrap || (!suspended && (!waitingForKeyFrame || key))) {
                         streamer.writePacket(codecBuffer, bufferInfo);
                         if (key) { waitingForKeyFrame = false; }
@@ -322,6 +440,36 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 Ln.e("Could not create video encoder '" + encoderName + "' for " + codec.getName() + "\n" + LogUtils.buildVideoEncoderListMessage());
                 throw e;
             }
+        }
+
+        // 硬件编码器优先探测
+        if (MediaFormat.MIMETYPE_VIDEO_AVC.equals(codec.getMimeType())) {
+            for (String hw : PREFERRED_HW_ENCODERS) {
+                MediaCodec mc = null;
+                try {
+                    mc = MediaCodec.createByCodecName(hw);
+                    String mime = Codec.getMimeType(mc);
+                    if (!codec.getMimeType().equals(mime)) {
+                        mc.release();
+                        continue;
+                    }
+                    MediaCodecInfo info = mc.getCodecInfo();
+                    // 排除软编（名称含 "android" 或 ".sw."）
+                    if (info != null
+                            && !info.getName().contains("android")
+                            && !info.getName().toLowerCase().contains(".sw.")) {
+                        Ln.d("Using preferred HW encoder: '" + hw + "'");
+                        return mc;
+                    }
+                    mc.release();
+                } catch (Exception ignored) {
+                    // 该硬件编码器不存在或不可用，继续尝试下一个
+                    if (mc != null) {
+                        try { mc.release(); } catch (Exception ignored2) { }
+                    }
+                }
+            }
+            Ln.d("No preferred HW encoder available, falling back to default");
         }
 
         try {
@@ -359,6 +507,16 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         if (maxFps > 0) {
             format.setFloat(KEY_MAX_FPS_TO_ENCODER, maxFps);
         }
+
+        // SurfaceEncoder.createFormat
+//        if (videoMimeType.equals(MediaFormat.MIMETYPE_VIDEO_AVC)) {
+//            // 从 Baseline 改为 Main
+//            format.setInteger(MediaFormat.KEY_PROFILE,
+//                    MediaCodecInfo.CodecProfileLevel.AVCProfileMain);
+//            // 明确 Level
+//            format.setInteger(MediaFormat.KEY_LEVEL,
+//                    MediaCodecInfo.CodecProfileLevel.AVCLevel31);
+//        }
 
         if (codecOptions != null) {
             for (CodecOption option : codecOptions) {
@@ -411,24 +569,34 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     public void onBitrate(int bps, double fps) {
         synchronized (feedbackLock) { pendingBitrate = Math.max(0, bps); }
     }
+
     @Override
     public void onKeyFrameRequest() {
         synchronized (feedbackLock) { pendingKeyFrame = true; }
     }
+
     @Override
     public void onPeerReset() {
         synchronized (feedbackLock) {
             pendingPeerRefresh = true;
-            pendingBitrate = -1;
             pendingKeyFrame = false;
+            // 不清空 pendingBitrate：保留最新带宽反馈，让 applyFeedback 基于最新 bps 重新决策
         }
     }
 
     /**
      * 处理来自 WebRTC / 网络的拥塞控制与关键帧反馈 (在编码线程执行)
+     *
+     * 修复要点：
+     * 1. BitrateLadder 更新节流到 100ms，避免高频回调打乱防抖计时
+     * 2. 帧率热更新同步到 Capture（VideoConstraints），不触发 codec reset
+     * 3. targetFps 与 encoderFps 分离，避免热更新污染编码器创建参数
+     * 4. 增强档位切换日志（bps / reason / delta）
+     * 5. 合并 firstFrameRefresh / bootstrapRefresh 的重复 reset
      */
     private void applyFeedback(MediaCodec codec) {
         if (captureControl.isResetRequested()) { return; }
+
         int bps;
         boolean keyFrame;
         boolean peerRefresh;
@@ -475,22 +643,39 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 keyFrame |= suspended;
                 suspended = false;
 
-                bitrateLadder.update(bps);
+                // ============ BitrateLadder 节流更新 ============
+                long now = SystemClock.elapsedRealtime();
+                if (now - lastLadderUpdateMs >= LADDER_UPDATE_INTERVAL_MS) {
+                    bitrateLadder.update(bps, now);
+                    lastLadderUpdateMs = now;
+                }
                 BitrateLadder.Level level = bitrateLadder.current();
 
                 int targetBitrate = Math.max(1, Math.min(bps, level.getBitRate()));
-                float nextFps = requestedMaxFps > 0 ? Math.min(requestedMaxFps, level.getFps()) : level.getFps();
+                float nextFps = requestedMaxFps > 0
+                        ? Math.min(requestedMaxFps, level.getFps())
+                        : level.getFps();
                 int targetMaxSize = level.getMaxSize();
 
-                // 【核心优化点】判断是否需要真正的编码器冷重启 (仅当目标分辨率发生改变时)
+                // ============ 分辨率变化：冷重启编码器 ============
                 if (adaptiveMaxSize != targetMaxSize) {
-                    Ln.i("Resolution tier changed: " + adaptiveMaxSize + " -> " + targetMaxSize + ", triggering codec reset.");
+                    String reason = targetMaxSize > adaptiveMaxSize ? "UPGRADE" : "DOWNGRADE";
+                    int delta = Math.abs(targetMaxSize - adaptiveMaxSize);
+                    Ln.i("Resolution tier changed: " + adaptiveMaxSize + " -> " + targetMaxSize
+                            + ", reason=" + reason
+                            + ", delta=" + delta
+                            + ", bps=" + bps
+                            + ", targetBitrate=" + targetBitrate
+                            + ", targetFps=" + nextFps
+                            + ", triggering codec reset.");
                     adaptiveMaxSize = targetMaxSize;
+                    targetFps = nextFps;
+                    encoderFps = nextFps;
                     maxFps = nextFps;
                     videoBitRate = targetBitrate;
                     needResolutionReset = true;
                 } else {
-                    // 仅码率或帧率变化：无缝热更新，不重启编码器，彻底消除黑屏与卡顿！
+                    // ============ 仅码率 / 帧率变化：热更新 ============
                     if (videoBitRate != targetBitrate) {
                         videoBitRate = targetBitrate;
                         Bundle params = new Bundle();
@@ -498,22 +683,34 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                         codec.setParameters(params);
                         streamer.reportVideoBitrate(videoBitRate);
                     }
-                    maxFps = nextFps; // 更新内存记录，Capture 采样层将平滑调帧
+
+                    // 帧率热更新：同步到 Capture 采样层，不重启编码器
+                    if (Float.compare(targetFps, nextFps) != 0) {
+                        targetFps = nextFps;
+                        maxFps = nextFps;
+                        VideoConstraints next = videoConstraints.withMaxFps(nextFps);
+                        if (capture.applyNewVideoConstraints(next)) {
+                            videoConstraints = next;
+                            Ln.d("Dynamic maxFps updated: " + nextFps);
+                        } else {
+                            Ln.w("Capture rejected maxFps update: " + nextFps);
+                        }
+                    }
                 }
             }
         }
 
-        // 仅在明确需要修改采样分辨率或收到 Refresh 指令时，才执行耗时 Reset
+        // ============ 合并 reset 判断，避免重复 reset ============
         if (needResolutionReset || firstFrameRefresh || bootstrapRefresh) {
             captureControl.reset(CaptureControl.RESET_REASON_BITRATE_CHANGED);
             synchronized (feedbackLock) { pendingKeyFrame = true; }
             return;
         }
 
-        // 动态请求关键帧 (Sync Frame)
+        // ============ 动态请求关键帧 (Sync Frame) ============
         if (keyFrame && !captureControl.isResetRequested()) {
             Bundle params = new Bundle();
-            params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0); // 清理多余的 KEY_MIME
+            params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
             codec.setParameters(params);
         }
     }

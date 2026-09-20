@@ -33,7 +33,7 @@ case "$SIGNAL_TOKEN" in
   *[!a-zA-Z0-9_-]*)
     echo "SIGNAL_TOKEN 只能包含字母、数字、下划线或连字符" >&2; exit 1 ;;
 esac
-args="4.1,signal_port=$SIGNAL_PORT,video_codec=$VIDEO_CODEC,signal_token=$SIGNAL_TOKEN,max_size=1600"
+args="4.1,signal_port=$SIGNAL_PORT,video_codec=$VIDEO_CODEC,signal_token=$SIGNAL_TOKEN"
 # am --esa uses comma-separated values; disallow commas/newlines in these options.
 for key in TURN_URL TURN_USER TURN_PASSWORD; do
   value="${!key:-}"
