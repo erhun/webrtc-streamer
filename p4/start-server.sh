@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Start the protected service on a rootable development emulator.
 set -euo pipefail
-export TURN_URL='turn:10.20.9.39:3478'
+export TURN_URL='turn:10.20.8.87:3478'
+#export TURN_URL=''
 #export TURN_URL='turn:192.168.3.3:3478'
 export TURN_USER='turnuser'
 export TURN_PASSWORD='turnpassword'
@@ -52,6 +53,8 @@ result="$(adb -s "$SERIAL" shell "am startservice -n com.genymobile.scrcpy/.Serv
 if [[ "$result" == *"Error:"* || "$result" == *"Exception"* ]]; then
   echo "启动服务被拒绝，请检查权限和 adb logcat -s scrcpy:*" >&2; exit 1;
 fi
+
+#echo　"debug: $quoted_args"
 
 ready=0
 for ((attempt=0; attempt<15; attempt++)); do

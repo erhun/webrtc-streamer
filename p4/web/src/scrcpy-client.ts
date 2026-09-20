@@ -148,15 +148,33 @@ export class ScrcpyClient {
     channel.onopen = () => { if (current()) { this.callbacks.onDataChannelOpen(channel); this.flushControl(); } };
     // A closed SCTP channel cannot be revived by ICE restart.
     channel.onclose = () => fail('控制通道已关闭，请申请新会话后连接');
-    pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
+    // pc.addTransceiver('video', { direction: 'recvonly' });
+    // pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    const videoTransceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+    const audioTransceiver = pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    if (videoTransceiver.receiver && 'playoutDelayHint' in videoTransceiver.receiver) {
+      videoTransceiver.receiver.playoutDelayHint = 0;
+    }
+    if (audioTransceiver.receiver && 'playoutDelayHint' in audioTransceiver.receiver) {
+      audioTransceiver.receiver.playoutDelayHint = 0; // 关键：音频也必须设为 0，防止 A/V Sync 拉高视频延迟
+    }
+
     const stream = new MediaStream();
     pc.ontrack = (event) => {
-      if (current()) {
-        if (event.track.kind === 'video') { trace(configureVideoLatency(event.receiver)); }
-        trace(`收到 ${event.track.kind} 轨道（尚非首帧）`);
-        stream.addTrack(event.track); this.callbacks.onVideoTrack(stream);
-      }
+//       if (current()) {
+//         if (event.track.kind === 'video') { trace(configureVideoLatency(event.receiver)); }
+//         trace(`收到 ${event.track.kind} 轨道（尚非首帧）`);
+//         stream.addTrack(event.track); this.callbacks.onVideoTrack(stream);
+//       }
+        if (current()) {
+            // 移除 kind === 'video' 判断，对 audio 和 video receiver 均进行配置
+            trace(configureVideoLatency(event.receiver));
+            trace(`收到 ${event.track.kind} 轨道（尚非首帧）`);
+            stream.addTrack(event.track);
+            this.callbacks.onVideoTrack(stream);
+        }
     };
     pc.onicecandidate = (event) => {
       if (current() && ready && this.ws?.readyState === WebSocket.OPEN && event.candidate) {

@@ -86,8 +86,30 @@ public final class SignalServer implements AutoCloseable {
     }
     public void sendAnswer(String sdp) {
         offerPending = false;
-        try { send(new JSONObject().put("type", "answer").put("sdp", sdp)); }
-        catch (JSONException e) { listener.onClosed(); }
+        String sanitizedSdp = sanitizeSdpForLowLatency(sdp);
+        try {
+            //send(new JSONObject().put("type", "answer").put("sdp", sdp));
+            send(new JSONObject().put("type", "answer").put("sdp", sanitizedSdp));
+        } catch (JSONException e) {
+            listener.onClosed();
+        }
+    }
+
+    private static String sanitizeSdpForLowLatency(String sdp) {
+        if (sdp == null) return null;
+
+        // 1. 移除 playout-delay RTP 头部扩展，避免 RTP 包报头干扰
+        String cleanSdp = sdp.replaceAll("a=extmap:\\d+\\s+http://www.webrtc.org/experiments/rtp-hdrext/playout-delay[^\r\n]*\r?\n?", "");
+
+        // 2. 确保视频 m=video 段落中包含 a=min-playout-delay:0
+        if (cleanSdp.contains("a=min-playout-delay:")) {
+            cleanSdp = cleanSdp.replaceAll("a=min-playout-delay:\\d+", "a=min-playout-delay:0");
+        } else if (cleanSdp.contains("m=video")) {
+            // 在 m=video 后面追加 a=min-playout-delay:0
+            cleanSdp = cleanSdp.replaceFirst("(m=video[^\r\n]*\r?\n)", "$1a=min-playout-delay:0\r\n");
+        }
+
+        return cleanSdp;
     }
     public void sendIceCandidate(String mid, int index, String sdp) {
         try {
