@@ -44,6 +44,7 @@ public final class BitrateLadder {
             new Level(960, 30, 2_000_000),   // 540p 30fps 2.0M
             new Level(1280, 30, 4_000_000),  // 720p 30fps 4.0M (高清基础，保证高频细节)
             new Level(1280, 60, 6_000_000),  // 720p 60fps 6.0M (高帧率流畅)
+            new Level(1600, 60, 8_000_000), // 1080p 60fps 12.0M (超清)
             new Level(1920, 60, 12_000_000), // 1080p 60fps 12.0M (超清)
     };
 

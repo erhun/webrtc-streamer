@@ -33,7 +33,7 @@ case "$SIGNAL_TOKEN" in
   *[!a-zA-Z0-9_-]*)
     echo "SIGNAL_TOKEN 只能包含字母、数字、下划线或连字符" >&2; exit 1 ;;
 esac
-args="4.1,signal_port=$SIGNAL_PORT,video_codec=$VIDEO_CODEC,signal_token=$SIGNAL_TOKEN"
+args="4.1,signal_port=$SIGNAL_PORT,video_codec=$VIDEO_CODEC,signal_token=$SIGNAL_TOKEN,max_size=1600"
 # am --esa uses comma-separated values; disallow commas/newlines in these options.
 for key in TURN_URL TURN_USER TURN_PASSWORD; do
   value="${!key:-}"
@@ -44,6 +44,11 @@ done
 if [ -n "${TURN_URL:-}" ]; then
   args="$args,turn_url=$TURN_URL,turn_user=${TURN_USER:-},turn_password=${TURN_PASSWORD:-}"
 fi
+# 授予悬浮窗权限（部分系统会将持有悬浮窗权限的应用视同拥有部分焦点）
+adb -s "$SERIAL" shell "appops set com.genymobile.scrcpy SYSTEM_ALERT_WINDOW allow"
+# 强制授予剪贴板读写
+adb -s "$SERIAL" shell "appops set com.genymobile.scrcpy READ_CLIPBOARD allow" || true
+adb -s "$SERIAL" shell "appops set com.genymobile.scrcpy WRITE_CLIPBOARD allow" || true
 # Quote for the remote shell as well as the local shell.
 quoted_args="'${args//\'/\'\\\'\'}'"
 result="$(adb -s "$SERIAL" shell "am startservice -n com.genymobile.scrcpy/.ServerService --esa args $quoted_args" 2>&1)" || {
