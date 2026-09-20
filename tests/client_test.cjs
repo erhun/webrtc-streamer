@@ -53,7 +53,7 @@ class Socket {
     if (msg.type === 'ping' && this.autoPong) this.receive({ type: 'pong' });
   }
   close() { this.readyState = 3; this.onclose?.({ code: 1000 }); }
-  drop(code = 1006) { this.readyState = 3; this.onclose?.({ code }); }
+  drop(code = 1006, reason = 'Authentication rejected') { this.readyState = 3; this.onclose?.({ code, reason }); }
   receive(msg) { this.onmessage({ data: JSON.stringify(msg) }); }
 }
 global.RTCPeerConnection = Peer; global.WebSocket = Socket;
@@ -150,7 +150,7 @@ async function answer(ws, pc) {
   // Authentication rejection is terminal, not an infinite reconnect loop.
   const rejected = makeClient(); const r = await connect(rejected.client); await answer(r.ws, r.pc);
   r.ws.drop(1008); assert.equal(rejected.client.peerConnection, null);
-  assert.match(rejected.errors.at(-1), /认证或协商被拒绝/);
+  assert.match(rejected.errors.at(-1), /服务端拒绝认证/);
   assert.equal(timers.size, 0);
 
   // No ready response means no resume secret; do not replay a consumed login token.
@@ -202,6 +202,24 @@ async function answer(ws, pc) {
   authSocket.onopen(); assert.equal(authSocket.messages[0].type, 'auth');
   assert.equal(authSocket.messages[0].token, 'c'.repeat(32));
   authSocket.drop(1008); assert.equal(newSession.client.peerConnection, null);
+  assert.equal(timers.size, 0);
+
+  // Protocol rejection must not silently downgrade resume to consumed login-token auth.
+  const protocolOld = makeClient(); const po = await connect(protocolOld.client); await answer(po.ws, po.pc);
+  protocolOld.client.suspend();
+  const protocolReload = makeClient(); await protocolReload.client.connect(options);
+  const protocolSocket = Socket.last; protocolSocket.onopen();
+  protocolSocket.drop(1008, 'Invalid peer identity');
+  assert.equal(Socket.last, protocolSocket);
+  assert.match(protocolReload.errors.at(-1), /页面连接标识无效/);
+  assert.ok(protocolReload.diagnostics.some(line => line.includes('reason=Invalid peer identity')));
+  assert.equal(timers.size, 0);
+
+  const usedToken = makeClient(); await usedToken.client.connect(options);
+  Socket.last.onopen(); Socket.last.drop(1008, 'LOGIN_TOKEN_USED');
+  assert.match(usedToken.errors.at(-1), /首次登录凭证已使用/);
+  assert.ok(usedToken.diagnostics.some(line => line.includes('认证方式=auth')));
+  assert.ok(!usedToken.diagnostics.some(line => line.includes(options.sessionToken)));
   assert.equal(timers.size, 0);
 
   // Storage policy failures do not break first-time connections or leak timers.

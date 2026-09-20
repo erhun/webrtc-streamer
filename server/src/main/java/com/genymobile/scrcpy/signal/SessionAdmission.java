@@ -27,10 +27,7 @@ public final class SessionAdmission {
         resumeToken = hex.toString();
     }
     public synchronized boolean claim(Object connection, String supplied, long nowMs) {
-        if (consumed || nowMs > expiresAtMs || supplied == null
-                || !MessageDigest.isEqual(token, supplied.getBytes(StandardCharsets.UTF_8))) {
-            return false;
-        }
+        if (claimRejection(supplied, nowMs) != null) { return false; }
         owner = connection;
         consumed = true;
         return true;
@@ -40,13 +37,28 @@ public final class SessionAdmission {
     // Only the secret issued to the authenticated client can replace a stale socket.
     // The initial login token remains single-use.
     public synchronized boolean resume(Object connection, String supplied, long nowMs) {
-        if (!consumed || nowMs > resumeUntilMs || supplied == null
-                || !MessageDigest.isEqual(resumeToken.getBytes(StandardCharsets.UTF_8), supplied.getBytes(StandardCharsets.UTF_8))) {
-            return false;
-        }
+        if (resumeRejection(supplied, nowMs) != null) { return false; }
         owner = connection;
         resumeUntilMs = Long.MAX_VALUE;
         return true;
+    }
+
+    public synchronized String claimRejection(String supplied, long nowMs) {
+        if (supplied == null || !MessageDigest.isEqual(token, supplied.getBytes(StandardCharsets.UTF_8))) {
+            return "LOGIN_TOKEN_INVALID";
+        }
+        if (consumed) { return "LOGIN_TOKEN_USED"; }
+        if (nowMs > expiresAtMs) { return "LOGIN_TOKEN_EXPIRED"; }
+        return null;
+    }
+
+    public synchronized String resumeRejection(String supplied, long nowMs) {
+        if (supplied == null || !MessageDigest.isEqual(resumeToken.getBytes(StandardCharsets.UTF_8), supplied.getBytes(StandardCharsets.UTF_8))) {
+            return "RESUME_TOKEN_INVALID";
+        }
+        if (!consumed) { return "RESUME_NOT_AVAILABLE"; }
+        if (nowMs > resumeUntilMs) { return "RESUME_EXPIRED"; }
+        return null;
     }
 
     // Call only after authentication succeeds. Same-page socket recovery keeps

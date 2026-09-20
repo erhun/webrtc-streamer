@@ -13,6 +13,23 @@ export interface ScrcpyClientCallbacks {
 }
 const RECOVERY_MS = 30000;
 const CONTROL_HIGH_WATER = 131072;
+const REJECTION_MESSAGES: Record<string, string> = {
+  LOGIN_TOKEN_USED: '首次登录凭证已使用，本次未使用有效的恢复凭证；请创建新会话',
+  LOGIN_TOKEN_INVALID: '首次登录凭证不匹配，请检查连接地址和会话凭证',
+  LOGIN_TOKEN_EXPIRED: '首次登录凭证已过期，请创建新会话',
+  RESUME_TOKEN_INVALID: '恢复凭证与服务端不匹配，服务端可能已重启或连接到了其他实例',
+  RESUME_NOT_AVAILABLE: '服务端没有可恢复的已认证会话，请创建新会话',
+  RESUME_EXPIRED: '服务端的 45 秒恢复窗口已过期，请创建新会话',
+  AUTH_REQUIRED: '服务端未接受认证握手，请检查前后端协议版本',
+  'Authentication rejected': '服务端拒绝认证，但未提供细分原因；请核对 Android 服务端版本',
+  'Invalid peer identity': '页面连接标识无效，请核对 H5 与服务端版本',
+  'Authentication timeout': '服务端等待认证超时',
+  'Offer already pending': '服务端仍在处理上一份 Offer，本次协商被拒绝',
+  'Offer already received': '服务端不支持重新协商，请更新 Android 服务端',
+  'Unknown message': '服务端不支持当前信令消息，请核对前后端版本',
+  'Invalid signaling message': '服务端处理信令消息失败，请查看 Android 日志',
+  'Session unavailable': '服务端会话不可用或等待连接数已满',
+};
 export class ScrcpyClient {
   private pc: RTCPeerConnection | null = null;
   private ws: WebSocket | null = null;
@@ -50,6 +67,8 @@ export class ScrcpyClient {
     const trace = (stage: string): void => {
       if (current()) { this.callbacks.onDiagnostic?.(`${Math.round(performance.now() - started)}ms ${stage}`); }
     };
+    trace('H5 recovery build: reload-diagnostics-v1');
+    trace(`恢复缓存: ${restoredToken ? '命中当前地址' : saved ? '地址不匹配' : '无可用缓存'}`);
     trace('连接开始');
     const fail = (message: string): void => {
       if (!current()) { return; }
@@ -178,7 +197,7 @@ export class ScrcpyClient {
       this.socketTimeout = setTimeout(() => lost('信令连接超时'), 5000);
       ws.onopen = () => {
         if (!active()) { return; }
-        trace('WebSocket 已打开');
+        trace(`WebSocket 已打开，认证方式=${resumeToken ? 'resume' : 'auth'}`);
         ws.send(JSON.stringify({ type: resumeToken ? 'resume' : 'auth', token: resumeToken || options.sessionToken, peerId }));
       };
       ws.onmessage = (event) => {
@@ -202,6 +221,7 @@ export class ScrcpyClient {
               ws.send(JSON.stringify({ type: 'ping' }));
               this.socketTimeout = setTimeout(() => lost('信令心跳超时'), 5000);
             }, 3000);
+            trace(`服务端恢复协议: ${msg.protocolVersion === 2 ? 'v2' : '未标识版本'}`);
             trace(msg.resumed ? '信令会话已恢复' : '鉴权完成');
             // Discard a negotiation whose answer may have been lost with the old socket.
             awaitingAnswer = false;
@@ -229,20 +249,24 @@ export class ScrcpyClient {
       ws.onerror = () => lost('信令连接错误');
       ws.onclose = (event) => {
         if (!active()) { return; }
-        trace(`WebSocket closed: code=${event.code}`);
+        const reason = Object.prototype.hasOwnProperty.call(REJECTION_MESSAGES, event.reason) ? event.reason
+          : event.reason === 'Peer reset failed' ? event.reason : '未识别或未提供';
+        trace(`WebSocket closed: code=${event.code} stage=${ready ? 'negotiation' : 'authentication'} reason=${reason}`);
         if (event.code === 1008) {
           if (event.reason === 'Peer reset failed') {
             fail('服务端连接重建失败，请重新编译 JNI 和 Android 服务端'); return;
           }
-          if (!ready && resumeToken && !retriedAuth && options.sessionToken.length >= 32) {
+          if (!ready && resumeToken && !retriedAuth && options.sessionToken.length >= 32
+              && ['Authentication rejected', 'RESUME_TOKEN_INVALID', 'RESUME_NOT_AVAILABLE'].includes(event.reason)) {
             // A restarted server has a new session secret. Try an explicitly supplied
             // login token once; never make a consumed login token reusable server-side.
             clearSocketTimeout();
+            trace('恢复认证不匹配，尝试一次手动输入的首次凭证');
             forgetResumeSession(url.href);
             resumeToken = ''; this.resumeSecret = ''; retriedAuth = true;
             this.ws = null;
             openSocket();
-          } else { fail('会话认证或协商被拒绝，请申请新会话后连接'); }
+          } else { fail(REJECTION_MESSAGES[reason] ?? '服务端拒绝连接（1008，未提供原因），请提供页面诊断日志'); }
         }
         else { lost('信令连接中断'); }
       };

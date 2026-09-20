@@ -120,12 +120,21 @@ public final class SignalServer implements AutoCloseable {
                         conn.close(1008, "Invalid peer identity"); return;
                     }
                     boolean resumed = "resume".equals(type);
-                    boolean accepted = pending.containsKey(conn) && (resumed
-                            ? admission.resume(conn, msg.optString("token"), now())
-                            : "auth".equals(type) && admission.claim(conn, msg.optString("token"), now()));
-                    if (!accepted) {
-                        conn.close(1008, "Authentication rejected"); return;
+                    String rejection;
+                    if (!pending.containsKey(conn) || (!resumed && !"auth".equals(type))) {
+                        rejection = "AUTH_REQUIRED";
+                    } else {
+                        rejection = resumed ? admission.resumeRejection(msg.optString("token"), now())
+                                : admission.claimRejection(msg.optString("token"), now());
                     }
+                    if (rejection != null) {
+                        Ln.w("Signaling admission rejected: mode=" + (resumed ? "resume" : "auth") + " reason=" + rejection);
+                        conn.close(1008, rejection); return;
+                    }
+                    boolean accepted = resumed ? admission.resume(conn, msg.optString("token"), now())
+                            : admission.claim(conn, msg.optString("token"), now());
+                    if (!accepted) { conn.close(1008, "Authentication rejected"); return; }
+                    Ln.i("Signaling admission accepted: mode=" + (resumed ? "resume" : "auth"));
                     boolean peerChanged = admission.updatePeerId(peerId);
                     peerResetting = resumed && peerChanged;
                     WebSocket previous = client;
@@ -145,7 +154,7 @@ public final class SignalServer implements AutoCloseable {
                         Ln.i("Rebuilt media peer for refreshed page");
                     }
                     conn.send(new JSONObject().put("type", "ready").put("resumeToken", admission.getResumeToken())
-                            .put("resumed", resumed).put("peerId", peerId).toString());
+                            .put("resumed", resumed).put("peerId", peerId).put("protocolVersion", 2).toString());
                     return;
                 }
             }

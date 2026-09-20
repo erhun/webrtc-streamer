@@ -116,3 +116,20 @@ is rejected; consumed tokens are never made reusable.
 - JNI build could not run: `WEBRTC_ROOT`, `CLANG`, `ANDROID_SYSROOT`, and
   `WEBRTC_REVISION` are not supplied. No updated native binary or APK is produced.
 - Real-device weak-network recovery remains to be verified.
+
+## Diagnosing a repeated rejection after reload
+
+The H5 diagnostic area starts with `H5 recovery build: reload-diagnostics-v1`.
+It records whether a resume cache matched, whether `auth` or `resume` was sent,
+the server protocol marker, and an allowlisted WebSocket close reason. No token
+values or SDP are logged by these diagnostics. Server admission logs use the same
+reason codes. `LOGIN_TOKEN_USED`, `RESUME_TOKEN_INVALID`, and `RESUME_EXPIRED`
+distinguish a replayed login token, a mismatched server session, and an expired
+recovery window. Existing protocol rejection reasons are also displayed.
+
+An initial-token fallback is permitted only for a resume authentication mismatch,
+not for every policy/protocol rejection. A protocol rejection must not trigger a
+misleading retry using an already-consumed login token. Lightweight tests cover
+this distinction. The repeated real-device rejection still requires the complete
+H5 diagnostic sequence to identify its actual cause; passing mocked regressions
+is not proof that the deployed H5/APK/JNI combination supports refresh recovery.
