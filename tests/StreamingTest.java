@@ -34,16 +34,30 @@ public final class StreamingTest {
         check(!fresh.resume(a, fresh.getResumeToken(), 1));
         check(!new SessionAdmission(token, 0).claim(a, token, 300001));
         CaptureRefreshGate refresh = new CaptureRefreshGate();
-        check(!refresh.consumeRefresh());
-        refresh.onBitrate(0); check(!refresh.consumeRefresh());
-        refresh.onBitrate(200000); check(refresh.consumeRefresh());
-        refresh.onBitrate(250000); check(!refresh.consumeRefresh());
-        for (int reload = 0; reload < 10; ++reload) {
-            refresh.newPeer(); check(!refresh.consumeRefresh());
+        for (int reload = 0; reload < 11; ++reload) {
+            if (reload > 0) { refresh.newPeer(); }
+            check(!refresh.consumeRefresh());
             refresh.onBitrate(0); check(!refresh.consumeRefresh());
+            check(!refresh.consumeBootstrapFrame(false)); // No undecodable delta bootstrap.
+            check(refresh.consumeBootstrapFrame(true)); // Initial IDR may precede negotiation.
+            check(!refresh.consumeBootstrapFrame(true)); // No unbounded zero-budget stream.
+            check(!refresh.consumeBootstrapRefresh(false));
+            check(refresh.consumeBootstrapRefresh(true)); // Transport-ready request refreshes static input.
+            check(!refresh.consumeBootstrapRefresh(true));
+            check(refresh.consumeBootstrapFrame(true)); // Input can now initialize native SetRates.
+            check(!refresh.consumeBootstrapFrame(true));
             refresh.onBitrate(30000); check(refresh.consumeRefresh());
             check(!refresh.consumeRefresh());
+            check(!refresh.consumeBootstrapFrame(true));
+            refresh.onBitrate(0); // A later network pause must not reopen bootstrap.
+            check(!refresh.consumeBootstrapFrame(true));
+            check(!refresh.consumeBootstrapRefresh(true));
+            refresh.onBitrate(50000); check(!refresh.consumeRefresh());
         }
+        CaptureRefreshGate earlyRate = new CaptureRefreshGate();
+        earlyRate.onBitrate(200000);
+        check(!earlyRate.consumeBootstrapRefresh(true)); // Coalesce with send-ready refresh.
+        check(earlyRate.consumeRefresh());
         BitrateLadder startup = new BitrateLadder();
         check(startup.update(200000, 0));
         check(startup.current().getMaxSize() == 854 && startup.current().getFps() == 24);

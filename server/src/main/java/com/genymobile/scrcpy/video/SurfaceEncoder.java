@@ -315,7 +315,9 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                         loggedFirstOutput = true;
                         loggedFirstKey |= key;
                     }
-                    if (isConfig || (!suspended && (!waitingForKeyFrame || key))) {
+                    boolean bootstrap = !isConfig && captureRefreshGate.consumeBootstrapFrame(key);
+                    if (bootstrap) { Ln.d("Peer bootstrap: forwarding IDR to initialize native encoder"); }
+                    if (isConfig || bootstrap || (!suspended && (!waitingForKeyFrame || key))) {
                         streamer.writePacket(codecBuffer, bufferInfo);
                         if (key) { waitingForKeyFrame = false; }
                     }
@@ -478,7 +480,12 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         // A new peer needs an actual input frame, not only a request for an IDR
         // on the next frame. Coalesce this refresh with bitrate reconfiguration.
         boolean firstFrameRefresh = captureRefreshGate.consumeRefresh();
-        boolean reconfigure = firstFrameRefresh;
+        boolean bootstrapRefresh = captureRefreshGate.consumeBootstrapRefresh(keyFrame);
+        boolean reconfigure = firstFrameRefresh || bootstrapRefresh;
+        if (bootstrapRefresh) {
+            waitingForKeyFrame = true;
+            Ln.d("Peer bootstrap: refreshing capture before encoder rate feedback");
+        }
         if (firstFrameRefresh) {
             waitingForKeyFrame = true;
             Ln.d("Peer first frame: positive send budget, refreshing capture");

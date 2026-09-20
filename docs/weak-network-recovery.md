@@ -156,3 +156,14 @@ Regression coverage includes ten peer-reset cycles, positive-bitrate gating,
 first-frame cancellation, delayed readiness, and retry exhaustion. On a device,
 leave the display completely static and reload at least ten times without
 touching the emulator; verify a first frame appears on every connection.
+
+### Bootstrap correction
+
+Waiting for positive bitrate must not block all source frames: native encoder
+initialization can depend on input before SetRates is delivered. Each peer now
+gets a bounded bootstrap IDR allowance, plus one capture refresh on its first
+keyframe request (transport readiness). A positive rate still triggers the
+send-ready refresh. A later zero-rate pause does not reopen the allowance.
+This removes the Java-side circular wait without disabling native congestion
+control. Device logs distinguish bootstrap refresh, bootstrap IDR forwarding,
+and positive-rate refresh; receiver retries remain a bounded fallback.
