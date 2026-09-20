@@ -342,6 +342,9 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
 
         // Events for all sources (display or camera)
         switch (type) {
+            case ControlMessage.TYPE_RELEASE_INPUTS:
+                releaseInputs();
+                return true;
             case ControlMessage.TYPE_RESET_VIDEO:
                 resetVideo();
                 return true;
@@ -460,6 +463,8 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
             try { Device.injectEvent(cancel, lastTouchDisplay, Device.INJECT_MODE_ASYNC); }
             finally { cancel.recycle(); }
         }
+        pointersState.clear();
+        lastTouchDisplay = Device.DISPLAY_ID_NONE;
     }
 
     private boolean injectKeycode(int action, int keycode, int repeat, int metaState) {

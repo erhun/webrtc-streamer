@@ -20,6 +20,7 @@ public final class SignalServer implements AutoCloseable {
         void onOffer(String sdp);
         void onIceCandidate(String mid, int index, String sdp);
         void onClosed();
+        boolean onPeerReset();
     }
     private final WebSocketServer server;
     private final Listener listener;
@@ -29,6 +30,7 @@ public final class SignalServer implements AutoCloseable {
     private volatile WebSocket client;
     private volatile boolean stopped;
     private volatile boolean offerPending;
+    private volatile boolean peerResetting;
     private volatile boolean sessionStarted;
     private final long createdAt = now();
     public SignalServer(int port, String token, Listener listener) {
@@ -97,7 +99,7 @@ public final class SignalServer implements AutoCloseable {
     }
     private void send(JSONObject message) {
         WebSocket target = client;
-        if (stopped || target == null || !target.isOpen()) { return; }
+        if (stopped || peerResetting || target == null || !target.isOpen()) { return; }
         try { target.send(message.toString()); }
         catch (RuntimeException e) { target.close(1011, "Signaling send failed"); }
     }
@@ -113,6 +115,10 @@ public final class SignalServer implements AutoCloseable {
             String type = msg.getString("type");
             synchronized (admission) {
                 if (!admission.owns(conn)) {
+                    String peerId = msg.optString("peerId");
+                    if (!peerId.isEmpty() && !peerId.matches("[0-9a-f]{32}")) {
+                        conn.close(1008, "Invalid peer identity"); return;
+                    }
                     boolean resumed = "resume".equals(type);
                     boolean accepted = pending.containsKey(conn) && (resumed
                             ? admission.resume(conn, msg.optString("token"), now())
@@ -120,13 +126,26 @@ public final class SignalServer implements AutoCloseable {
                     if (!accepted) {
                         conn.close(1008, "Authentication rejected"); return;
                     }
+                    boolean peerChanged = admission.updatePeerId(peerId);
+                    peerResetting = resumed && peerChanged;
                     WebSocket previous = client;
                     pending.remove(conn);
                     client = conn;
                     sessionStarted = true;
                     if (previous != null && previous != conn) { previous.close(1000, "Signaling resumed"); }
+                    if (peerResetting) {
+                        try {
+                            if (!listener.onPeerReset()) {
+                                Ln.e("Peer reset failed: rebuild JNI and the Android server together");
+                                conn.close(1008, "Peer reset failed");
+                                listener.onClosed(); return;
+                            }
+                            offerPending = false;
+                        } finally { peerResetting = false; }
+                        Ln.i("Rebuilt media peer for refreshed page");
+                    }
                     conn.send(new JSONObject().put("type", "ready").put("resumeToken", admission.getResumeToken())
-                            .put("resumed", resumed).toString());
+                            .put("resumed", resumed).put("peerId", peerId).toString());
                     return;
                 }
             }

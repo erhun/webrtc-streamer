@@ -5,6 +5,15 @@ const settle = async () => { for (let i = 0; i < 6; i++) await tick(); };
 let now = 0, nextTimer = 0;
 const timers = new Map();
 global.performance = { now: () => now };
+const epoch = Date.now();
+Date.now = () => epoch + now;
+const storage = new Map();
+global.sessionStorage = {
+  getItem: key => storage.get(key) ?? null,
+  setItem: (key, value) => storage.set(key, value),
+  removeItem: key => storage.delete(key),
+};
+global.crypto = require('node:crypto').webcrypto;
 global.setTimeout = (fn, ms) => { const id = ++nextTimer; timers.set(id, { fn, at: now + ms }); return id; };
 global.setInterval = (fn, ms) => { const id = ++nextTimer; timers.set(id, { fn, at: now + ms, interval: ms }); return id; };
 global.clearTimeout = global.clearInterval = id => timers.delete(id);
@@ -93,7 +102,9 @@ async function answer(ws, pc) {
   assert.equal(client.peerConnection, pc);
   await advance(3000);
   const resumed = Socket.last; assert.notEqual(resumed, ws);
-  resumed.onopen(); assert.deepEqual(resumed.messages[0], { type: 'resume', token: 'b'.repeat(64) });
+  resumed.onopen(); assert.equal(resumed.messages[0].type, 'resume');
+  assert.equal(resumed.messages[0].token, 'b'.repeat(64));
+  assert.equal(resumed.messages[0].peerId, ws.messages[0].peerId);
   resumed.receive({ type: 'ready', resumeToken: 'b'.repeat(64), resumed: true }); await settle();
   assert.equal(pc.offers.at(-1).iceRestart, true);
   ws.receive({ type: 'answer', sdp: 'stale' }); ws.onclose({ code: 1008 });
@@ -146,5 +157,58 @@ async function answer(ws, pc) {
   const unauthenticated = makeClient(); await unauthenticated.client.connect(options);
   await advance(5000); assert.equal(unauthenticated.client.peerConnection, null);
   assert.equal(timers.size, 0);
+  // A page reload keeps the tab's resume secret, but must create a new native peer.
+  const beforeReload = makeClient();
+  const first = await connect(beforeReload.client); await answer(first.ws, first.pc);
+  assert.equal(storage.size, 1);
+  assert.ok(![...storage.values()][0].includes(options.sessionToken));
+  beforeReload.client.suspend();
+  assert.notEqual(first.ws.messages.at(-1).type, 'bye');
+  assert.equal(timers.size, 0); assert.equal(storage.size, 1);
+  const afterReload = makeClient();
+  await afterReload.client.connect({ ...options, sessionToken: '' });
+  const reloadSocket = Socket.last, reloadPeer = Peer.last;
+  reloadSocket.onopen();
+  assert.equal(reloadSocket.messages[0].type, 'resume');
+  assert.notEqual(reloadSocket.messages[0].peerId, first.ws.messages[0].peerId);
+  reloadSocket.receive({ type: 'ready', resumed: true, resumeToken: 'b'.repeat(64), peerId: reloadSocket.messages[0].peerId });
+  await settle(); await answer(reloadSocket, reloadPeer);
+  assert.equal(afterReload.states.at(-1), 'connected');
+  afterReload.client.close();
+  assert.equal(reloadSocket.messages.at(-1).type, 'bye');
+  assert.equal(storage.size, 0); assert.equal(timers.size, 0);
+
+  // Missing peer-reset support must be reported, rather than authenticating then black-screening.
+  const legacy = makeClient(); const legacyFirst = await connect(legacy.client); await answer(legacyFirst.ws, legacyFirst.pc);
+  legacy.client.suspend();
+  const reloadLegacy = makeClient(); await reloadLegacy.client.connect({ ...options, sessionToken: '' });
+  const legacySocket = Socket.last; legacySocket.onopen();
+  legacySocket.receive({ type: 'ready', resumed: true, resumeToken: 'b'.repeat(64) }); await settle();
+  assert.match(reloadLegacy.errors.at(-1), /服务端不支持页面刷新恢复/);
+  assert.equal(timers.size, 0); assert.equal(storage.size, 0);
+
+  // Expired tab credentials are not used, and cannot make a consumed token reusable.
+  const stale = makeClient(); const staleFirst = await connect(stale.client); await answer(staleFirst.ws, staleFirst.pc);
+  stale.client.suspend(); await advance(45001);
+  const expiredReload = makeClient(); await expiredReload.client.connect({ ...options, sessionToken: '' });
+  assert.equal(expiredReload.client.peerConnection, null); assert.equal(storage.size, 0);
+
+  // New server session: an explicitly entered login token gets one fallback attempt.
+  const oldSession = makeClient(); const old = await connect(oldSession.client); await answer(old.ws, old.pc);
+  oldSession.client.suspend();
+  const newSession = makeClient(); await newSession.client.connect({ ...options, sessionToken: 'c'.repeat(32) });
+  const rejectedResume = Socket.last; rejectedResume.onopen(); rejectedResume.drop(1008);
+  const authSocket = Socket.last; assert.notEqual(authSocket, rejectedResume);
+  authSocket.onopen(); assert.equal(authSocket.messages[0].type, 'auth');
+  assert.equal(authSocket.messages[0].token, 'c'.repeat(32));
+  authSocket.drop(1008); assert.equal(newSession.client.peerConnection, null);
+  assert.equal(timers.size, 0);
+
+  // Storage policy failures do not break first-time connections or leak timers.
+  global.sessionStorage = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); },
+    removeItem() { throw new Error('blocked'); } };
+  const privateTab = makeClient(); const privateConnection = await connect(privateTab.client);
+  await answer(privateConnection.ws, privateConnection.pc); assert.equal(privateTab.states.at(-1), 'connected');
+  privateTab.client.close(); assert.equal(timers.size, 0);
   console.log('Browser signaling, weak-network recovery and backpressure regressions passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

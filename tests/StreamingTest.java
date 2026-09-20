@@ -11,6 +11,10 @@ public final class StreamingTest {
         check(!admission.claim(a, "bad", 1)); check(admission.claim(a, token, 2));
         check(!admission.claim(b, token, 3)); check(!admission.release(b, 3)); check(admission.owns(a));
         check(admission.release(a, 4)); check(!admission.claim(b, token, 4));
+        check(admission.updatePeerId("page-a"));
+        check(!admission.updatePeerId("page-a")); // Same page / new signaling socket: retain peer.
+        check(admission.updatePeerId("page-b")); // Reload: new DTLS/SCTP peer required.
+        check(!admission.updatePeerId("page-b")); // Retried resume is idempotent.
         String resume = admission.getResumeToken();
         check(!resume.equals(token) && resume.length() == 64);
         check(!admission.resume(b, token, 5)); check(!admission.resume(b, "bad", 5));

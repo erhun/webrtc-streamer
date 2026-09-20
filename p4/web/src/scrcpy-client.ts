@@ -1,3 +1,4 @@
+import { readResumeSession, saveResumeSession, forgetResumeSession, newPeerId } from './session-resume';
 import { configureVideoLatency } from './receiver-latency';
 import { MessageType, MotionEventAction } from './control-message';
 interface IceServer { urls: string; username?: string; credential?: string; }
@@ -22,14 +23,19 @@ export class ScrcpyClient {
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private controlQueue: Uint8Array[] = [];
   private controlBytes = 0;
+  private resumeUrl = '';
+  private resumeSecret = '';
+  private authenticatedSocket = false;
   constructor(private readonly callbacks: ScrcpyClientCallbacks) { }
   async connect(options: ConnectOptions): Promise<void> {
     this.close();
     const invalid = (message: string): void => {
       this.callbacks.onStateChange('failed'); this.callbacks.onError(message);
     };
-    if (options.sessionToken.length < 32) { invalid('请输入有效的会话凭证'); return; }
     const url = new URL(options.signalingUrl);
+    const saved = readResumeSession();
+    const restoredToken = saved?.url === url.href ? saved.token : '';
+    if (!restoredToken && options.sessionToken.length < 32) { invalid('请输入有效的会话凭证'); return; }
     if (url.protocol !== 'wss:' && !(url.protocol === 'ws:')) {
       invalid('远程连接需要 wss:// 地址'); return;
     }
@@ -51,7 +57,15 @@ export class ScrcpyClient {
       this.close(); this.callbacks.onStateChange('failed'); this.callbacks.onError(message);
     };
     this.timeout = setTimeout(() => fail('连接超时，请申请新会话后重试'), 30000);
-    let resumeToken = '';
+    let resumeToken = restoredToken;
+    const peerId = newPeerId();
+    let freshPeer = true;
+    let retriedAuth = false;
+    this.resumeUrl = url.href;
+    this.resumeSecret = resumeToken;
+    const remember = (): void => {
+      if (resumeToken) { saveResumeSession(url.href, resumeToken); }
+    };
     let ready = false;
     let recovering = false;
     let offering = false;
@@ -146,6 +160,7 @@ export class ScrcpyClient {
       const ws = new WebSocket(options.signalingUrl);
       this.ws = ws;
       ready = false;
+      this.authenticatedSocket = false;
       const active = (): boolean => current() && this.ws === ws;
       const clearSocketTimeout = (): void => {
         if (this.socketTimeout) { clearTimeout(this.socketTimeout); this.socketTimeout = null; }
@@ -164,7 +179,7 @@ export class ScrcpyClient {
       ws.onopen = () => {
         if (!active()) { return; }
         trace('WebSocket 已打开');
-        ws.send(JSON.stringify({ type: resumeToken ? 'resume' : 'auth', token: resumeToken || options.sessionToken }));
+        ws.send(JSON.stringify({ type: resumeToken ? 'resume' : 'auth', token: resumeToken || options.sessionToken, peerId }));
       };
       ws.onmessage = (event) => {
         messages = messages.then(async () => {
@@ -172,7 +187,14 @@ export class ScrcpyClient {
           const msg = JSON.parse(event.data as string);
           if (msg.type === 'ready' && !ready) {
             clearSocketTimeout();
+            if (freshPeer && resumeToken && msg.resumed && msg.peerId !== peerId) {
+              fail('服务端不支持页面刷新恢复，请更新 Android 服务端后创建新会话'); return;
+            }
             if (typeof msg.resumeToken === 'string') { resumeToken = msg.resumeToken; }
+            this.resumeSecret = resumeToken;
+            this.authenticatedSocket = true;
+            remember();
+            freshPeer = false;
             ready = true;
             if (this.heartbeat) { clearInterval(this.heartbeat); }
             this.heartbeat = setInterval(() => {
@@ -187,6 +209,7 @@ export class ScrcpyClient {
             await offer(Boolean(msg.resumed));
           } else if (msg.type === 'pong' && ready) {
             clearSocketTimeout();
+            remember();
           } else if (msg.type === 'answer' && ready && awaitingAnswer) {
             trace('Answer 已收到');
             await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
@@ -207,7 +230,20 @@ export class ScrcpyClient {
       ws.onclose = (event) => {
         if (!active()) { return; }
         trace(`WebSocket closed: code=${event.code}`);
-        if (event.code === 1008) { fail('会话认证或协商被拒绝，请申请新会话后连接'); }
+        if (event.code === 1008) {
+          if (event.reason === 'Peer reset failed') {
+            fail('服务端连接重建失败，请重新编译 JNI 和 Android 服务端'); return;
+          }
+          if (!ready && resumeToken && !retriedAuth && options.sessionToken.length >= 32) {
+            // A restarted server has a new session secret. Try an explicitly supplied
+            // login token once; never make a consumed login token reusable server-side.
+            clearSocketTimeout();
+            forgetResumeSession(url.href);
+            resumeToken = ''; this.resumeSecret = ''; retriedAuth = true;
+            this.ws = null;
+            openSocket();
+          } else { fail('会话认证或协商被拒绝，请申请新会话后连接'); }
+        }
         else { lost('信令连接中断'); }
       };
     };
@@ -242,7 +278,13 @@ export class ScrcpyClient {
   }
   get peerConnection(): RTCPeerConnection | null { return this.pc; }
   get dataChannel(): RTCDataChannel | null { return this.controlChannel; }
-  close(): void {
+  // Page lifecycle teardown must not send bye or revoke the recovery credential.
+  suspend(): void {
+    if (this.resumeSecret) { saveResumeSession(this.resumeUrl, this.resumeSecret); }
+    this.dispose(false);
+  }
+  close(): void { this.dispose(true); }
+  private dispose(terminate: boolean): void {
     if (this.timeout) { clearTimeout(this.timeout); this.timeout = null; }
     if (this.recoveryInterval) { clearInterval(this.recoveryInterval); this.recoveryInterval = null; }
     if (this.socketTimeout) { clearTimeout(this.socketTimeout); this.socketTimeout = null; }
@@ -251,9 +293,11 @@ export class ScrcpyClient {
     this.pc = null; this.ws = null; this.controlChannel = null;
     this.controlQueue = []; this.controlBytes = 0;
     // Explicit close is terminal; a transient signaling loss uses lost() instead.
-    if (ws?.readyState === WebSocket.OPEN) {
+    if (terminate && this.authenticatedSocket && ws?.readyState === WebSocket.OPEN) {
       try { ws.send(JSON.stringify({ type: 'bye' })); } catch { /* Socket already lost. */ }
     }
+    if (terminate && this.resumeUrl) { forgetResumeSession(this.resumeUrl); }
+    this.resumeUrl = ''; this.resumeSecret = ''; this.authenticatedSocket = false;
     channel?.close(); ws?.close(); pc?.close();
     this.callbacks.onStateChange('closed');
   }

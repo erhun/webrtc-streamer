@@ -133,6 +133,11 @@ JNIEXPORT void JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nat
     s->pc->PushAudio(reinterpret_cast<const uint8_t*>(bytes), size, pts);
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
 }
+JNIEXPORT jboolean JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nativeResetPeer(
+        JNIEnv*, jobject, jlong handle) {
+    auto* s = Get(handle);
+    return s && s->pc->ResetPeerConnection() ? JNI_TRUE : JNI_FALSE;
+}
 JNIEXPORT void JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nativeOffer(
         JNIEnv* env, jobject, jlong handle, jstring sdp) {
     auto* s = Get(handle); if (s) { s->pc->OnOffer(String(env, sdp)); }

@@ -16,6 +16,24 @@ import java.util.Arrays;
 public class ControlMessageReaderTest {
 
     @Test
+    public void testReleaseInputsDoesNotConsumeNextMessage() throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream output = new DataOutputStream(bytes);
+        output.writeByte(ControlMessage.TYPE_RELEASE_INPUTS);
+        output.writeByte(ControlMessage.TYPE_INJECT_KEYCODE);
+        output.writeByte(KeyEvent.ACTION_DOWN);
+        output.writeInt(KeyEvent.KEYCODE_ENTER);
+        output.writeInt(0);
+        output.writeInt(0);
+        ControlMessageReader reader = new ControlMessageReader(new ByteArrayInputStream(bytes.toByteArray()));
+        Assert.assertEquals(ControlMessage.TYPE_RELEASE_INPUTS, reader.read().getType());
+        ControlMessage next = reader.read();
+        Assert.assertEquals(ControlMessage.TYPE_INJECT_KEYCODE, next.getType());
+        Assert.assertEquals(KeyEvent.ACTION_DOWN, next.getAction());
+        Assert.assertEquals(KeyEvent.KEYCODE_ENTER, next.getKeycode());
+    }
+
+    @Test
     public void testParseKeycodeEvent() throws IOException {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         DataOutputStream dos = new DataOutputStream(bos);

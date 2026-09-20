@@ -13,6 +13,8 @@ public class PointersState {
 
     private final List<Pointer> pointers = new ArrayList<>();
 
+    public void clear() { pointers.clear(); }
+
     private int indexOf(long id) {
         for (int i = 0; i < pointers.size(); ++i) {
             Pointer pointer = pointers.get(i);

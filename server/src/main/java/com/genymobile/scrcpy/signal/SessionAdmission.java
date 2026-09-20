@@ -13,6 +13,7 @@ public final class SessionAdmission {
     private long resumeUntilMs = Long.MAX_VALUE;
     private Object owner;
     private boolean consumed;
+    private String peerId = "";
     public SessionAdmission(String token, long nowMs) {
         if (token == null || token.length() < 32) {
             throw new IllegalArgumentException("signal_token must contain at least 32 characters");
@@ -46,6 +47,14 @@ public final class SessionAdmission {
         owner = connection;
         resumeUntilMs = Long.MAX_VALUE;
         return true;
+    }
+
+    // Call only after authentication succeeds. Same-page socket recovery keeps
+    // the peer; a refreshed page has a new identity and needs a new DTLS/SCTP peer.
+    public synchronized boolean updatePeerId(String value) {
+        boolean changed = !peerId.equals(value);
+        peerId = value;
+        return changed;
     }
 
     public synchronized boolean recoveryExpired(long nowMs) {

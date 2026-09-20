@@ -270,6 +270,9 @@ public final class Server {
             public void onClosed() { session.stop(); }
 
             @Override
+            public boolean onPeerReset() { return bridge.resetPeer(); }
+
+            @Override
             public void onOffer(String sdp) {
                 bridge.onOffer(sdp);
             }

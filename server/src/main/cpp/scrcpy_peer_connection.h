@@ -33,6 +33,7 @@ public:
     void OnConnectionClosed();
     void OnConnectionReady();
     void OnConnectionInterrupted();
+    bool ResetPeerConnection();
 
     void SetAnswerCallback(std::function<void(const std::string&)> callback);
     void SetIceCandidateCallback(std::function<void(const std::string&, int, const std::string&)> callback);
@@ -52,6 +53,9 @@ public:
     void OnIceCandidateGathered(const std::string& sdp_mid, int sdp_mline_index, const std::string& sdp);
 
 private:
+    bool CreatePeerConnection();
+    void ClosePeerConnection();
+    webrtc::PeerConnectionInterface::RTCConfiguration configuration_;
     std::shared_ptr<bool> lifetime_ = std::make_shared<bool>(true);
     webrtc::scoped_refptr<PcmAudioSource> audio_source_;
     std::function<void()> closed_callback_;

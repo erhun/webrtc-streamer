@@ -42,6 +42,11 @@ public final class NativeEncoderBridge implements AutoCloseable {
     public synchronized void pushPcm(ByteBuffer buffer, long pts) {
         if (handle != 0) { nativePushPcm(handle, copy(buffer), pts); }
     }
+    public synchronized boolean resetPeer() {
+        try { return handle != 0 && nativeResetPeer(handle); }
+        catch (UnsatisfiedLinkError e) { return false; } // APK packaged with an older JNI library.
+    }
+    private native boolean nativeResetPeer(long session);
     public synchronized void onOffer(String sdp) { if (handle != 0) { nativeOffer(handle, sdp); } }
     public synchronized void onIceCandidate(String mid, int index, String sdp) {
         if (handle != 0) { nativeIce(handle, mid, index, sdp); }

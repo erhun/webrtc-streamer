@@ -1,3 +1,4 @@
+import { readResumeSession } from './session-resume';
 import { mountLatencyMetrics } from './latency-metrics';
 import { mountMetrics } from './stream-metrics';
 import { ScrcpyClient } from './scrcpy-client';
@@ -139,6 +140,21 @@ function main(): void {
     const url = (document.querySelector('.url-input') as HTMLInputElement).value;
     void connect(url).catch((error) => { client?.close(); status.textContent = String(error); });
   });
+
+  const restoreSession = (): void => {
+    const saved = readResumeSession();
+    if (!saved) { return; }
+    (document.querySelector('.url-input') as HTMLInputElement).value = saved.url;
+    void connect(saved.url).catch((error) => { client?.close(); status.textContent = String(error); });
+  };
+  window.addEventListener('pagehide', () => {
+    client?.suspend();
+    client = null;
+    input = null;
+    dataChannel = null;
+  });
+  window.addEventListener('pageshow', (event) => { if (event.persisted) { restoreSession(); } });
+  restoreSession();
 
   video.addEventListener('touchstart', (e) => input?.handleTouchStart(e, video), { passive: false });
   video.addEventListener('touchmove', (e) => input?.handleTouchMove(e, video), { passive: false });

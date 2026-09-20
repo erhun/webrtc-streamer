@@ -168,16 +168,7 @@ ScrcpyPeerConnection::~ScrcpyPeerConnection() {
             ice_candidate_callback_ = nullptr;
             data_callback_ = nullptr;
             closed_callback_ = nullptr;
-            if (data_channel_ != nullptr) {
-                data_channel_->UnregisterObserver();
-                data_channel_->Close();
-                data_channel_ = nullptr;
-            }
-            delete data_channel_observer_;
-            data_channel_observer_ = nullptr;
-            if (peer_connection_ != nullptr) { peer_connection_->Close(); peer_connection_ = nullptr; }
-            observer_.reset();
-            pending_ice_.clear();
+            ClosePeerConnection();
             factory_ = nullptr;
             audio_source_ = nullptr;
         });
@@ -219,28 +210,65 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         webrtc::EnableMedia(deps);
         factory_ = webrtc::PeerConnectionFactory::Create(std::move(deps));
         if (factory_ == nullptr) { return; }
-        webrtc::PeerConnectionInterface::RTCConfiguration config;
         if (!turn_url.empty()) {
             webrtc::PeerConnectionInterface::IceServer turn;
             turn.uri = turn_url; turn.username = turn_user; turn.password = turn_password;
-            config.servers.push_back(turn);
+            configuration_.servers.push_back(turn);
         }
-        observer_ = std::make_unique<PeerObserver>(this);
-        webrtc::PeerConnectionDependencies dependencies(observer_.get());
-        auto result = factory_->CreatePeerConnectionOrError(config, std::move(dependencies));
-        if (!result.ok()) { return; }
-        peer_connection_ = result.MoveValue();
-        auto video_track = factory_->CreateVideoTrack(track_source, "video");
-        if (!video_track || !peer_connection_->AddTrack(video_track, {"scrcpy"}).ok()) { return; }
-        if (audio) {
-            audio_source_ = webrtc::make_ref_counted<PcmAudioSource>();
-            auto audio_track = factory_->CreateAudioTrack("audio", audio_source_.get());
-            if (!audio_track || !peer_connection_->AddTrack(audio_track, {"scrcpy"}).ok()) { return; }
-        }
-        success = true;
+        if (audio) { audio_source_ = webrtc::make_ref_counted<PcmAudioSource>(); }
+        success = CreatePeerConnection();
     });
     return success;
 }
+// All peer creation/destruction and observer lifetime changes run on the signaling thread.
+void ScrcpyPeerConnection::ClosePeerConnection() {
+    lifetime_.reset(); // Invalidate old answers, ICE callbacks, and recovery timers first.
+    if (data_channel_) {
+        data_channel_->UnregisterObserver();
+        data_channel_->Close();
+        data_channel_ = nullptr;
+    }
+    delete data_channel_observer_;
+    data_channel_observer_ = nullptr;
+    if (peer_connection_) { peer_connection_->Close(); peer_connection_ = nullptr; }
+    observer_.reset();
+    pending_ice_.clear();
+    remote_description_set_ = false;
+    stats_pending_ = false;
+    recovering_ = false;
+    ++recovery_generation_;
+}
+
+bool ScrcpyPeerConnection::CreatePeerConnection() {
+    lifetime_ = std::make_shared<bool>(true);
+    observer_ = std::make_unique<PeerObserver>(this);
+    webrtc::PeerConnectionDependencies dependencies(observer_.get());
+    auto result = factory_->CreatePeerConnectionOrError(configuration_, std::move(dependencies));
+    if (!result.ok()) { return false; }
+    peer_connection_ = result.MoveValue();
+    auto video_track = factory_->CreateVideoTrack(video_source_, "video");
+    if (!video_track || !peer_connection_->AddTrack(video_track, {"scrcpy"}).ok()) { return false; }
+    if (audio_source_) {
+        auto audio_track = factory_->CreateAudioTrack("audio", audio_source_.get());
+        if (!audio_track || !peer_connection_->AddTrack(audio_track, {"scrcpy"}).ok()) { return false; }
+    }
+    return true;
+}
+
+bool ScrcpyPeerConnection::ResetPeerConnection() {
+    bool success = false;
+    signaling_thread_->BlockingCall([&] {
+        ClosePeerConnection();
+        // Serialize input release after all old messages and before the new channel.
+        // ControlMessage.TYPE_RELEASE_INPUTS; never clear a partially read byte stream.
+        const uint8_t release_inputs = 23;
+        if (data_callback_) { data_callback_(&release_inputs, 1); }
+        success = CreatePeerConnection();
+        if (success) { OnConnectionInterrupted(); } // Bound a reset that never negotiates.
+    });
+    return success;
+}
+
 void ScrcpyPeerConnection::PushAudio(const uint8_t* data, size_t len, int64_t pts_us) {
     if (audio_source_ != nullptr) { audio_source_->Push(data, len, pts_us); }
 }
