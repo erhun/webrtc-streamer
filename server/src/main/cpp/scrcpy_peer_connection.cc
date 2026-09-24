@@ -196,7 +196,12 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         // Enable periodic ALR probing so the BWE measures real network capacity
         // instead of staying application-limited by the passthrough encoder's
         // content-dependent output rate.
-        static webrtc::FieldTrials field_trials("WebRTC-VideoRateControl/alr_probing:true/");
+        // ForceSendPlayoutDelay negotiates max_playout_delay (500ms default in
+        // this string) instead of the 10s default, which enables the receiver's
+        // low-latency rendering path and caps the jitter buffer target delay.
+        static webrtc::FieldTrials field_trials(
+                "WebRTC-VideoRateControl/alr_probing:true/"
+                "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/");
         auto env = webrtc::CreateEnvironment(&field_trials);
         deps.env = env;
         deps.adm = webrtc::CreateAudioDeviceModule(env, webrtc::AudioDeviceModule::kDummyAudio);
