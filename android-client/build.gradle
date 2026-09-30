@@ -1,0 +1,27 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = 'com.genymobile.scrcpy.client'
+    compileSdk 34
+    defaultConfig {
+        applicationId = "com.genymobile.scrcpy.client"
+        minSdkVersion 23
+        targetSdkVersion 34
+        versionCode 1
+        versionName "1.0"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'io.github.webrtc-sdk:android:150.7871.01'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+}

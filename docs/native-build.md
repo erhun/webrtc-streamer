@@ -157,20 +157,20 @@ adb reboot   # 重启让系统应用生效
 
 ```bash
 adb shell am startservice -n com.genymobile.scrcpy/.ServerService \
-     --esa args '4.1,signal_port=8080,video_codec=h264'
+     --esa args '4.1,signal_port=10000,video_codec=h264'
 
 # 验证 system UID + 权限
 adb shell dumpsys package com.genymobile.scrcpy | grep -E 'userId=|granted'
 # userId=1000  /  CAPTURE_VIDEO_OUTPUT: granted=true  /  MANAGE_MEDIA_PROJECTION: granted=true
 
 # 验证 SignalServer 监听
-adb shell ss -tlnp | grep 8080
+adb shell ss -tlnp | grep 10000
 
 # 验证 WebSocket 握手
-adb forward tcp:8080 tcp:8080
+adb forward tcp:10000 tcp:10000
 curl -i -H "Connection: Upgrade" -H "Upgrade: websocket" \
      -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-     http://localhost:8080/
+     http://localhost:10000/
 # → HTTP/1.1 101 Web Socket Protocol Handshake
 ```
 
@@ -188,7 +188,7 @@ curl -i -H "Connection: Upgrade" -H "Upgrade: websocket" \
 云机(模拟器 10.0.2.15) ────┘     └──→ relay candidate 10.20.10.7:<port>
         │ 通过 10.0.2.2 访问 mac（模拟器 host 网关）
         │
-        └── 信令 WebSocket：adb forward tcp:8080 tcp:8080
+        └── 信令 WebSocket：adb forward tcp:10000 tcp:10000
 ```
 
 关键：**云机访问 TURN 用 `10.0.2.2:3478`，浏览器访问 TURN 用 `10.20.10.7:3478`**（同一个 coturn）。
@@ -422,7 +422,7 @@ pc.addTransceiver('audio', { direction: 'recvonly' });
 | 静态链接未定义 webrtc 符号 | 0 |
 | 进程 UID | `system`（1000） |
 | CAPTURE_VIDEO_OUTPUT | granted=true |
-| SignalServer | `LISTEN *:8080` |
+| SignalServer | `LISTEN *:10000` |
 | WebSocket 握手 | `101 Web Socket Protocol Handshake` |
 | offer → answer | 视频 `H264/90000` + 音频 `opus/48000/2` 均协商成功 |
 | ICE + DTLS | connected（TURN relay nominated） |

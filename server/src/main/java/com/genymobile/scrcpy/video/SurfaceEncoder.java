@@ -486,27 +486,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         MediaFormat format = new MediaFormat();
         format.setString(MediaFormat.KEY_MIME, videoMimeType);
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate);
-        int targetFps = (maxFps > 0) ? (int) maxFps : 60;
+        int targetFps = (maxFps > 0) ? (int) maxFps : 30;
         format.setInteger(MediaFormat.KEY_FRAME_RATE, targetFps);
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        if (Build.VERSION.SDK_INT >= AndroidVersions.API_24_ANDROID_7_0) {
-            format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
-        }
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, DEFAULT_I_FRAME_INTERVAL);
-        format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, REPEAT_FRAME_DELAY_US);
-        if (Build.VERSION.SDK_INT >= AndroidVersions.API_23_ANDROID_6_0) {
-            format.setInteger(MediaFormat.KEY_PRIORITY, 0); // 低延迟实时优先级
-        }
-        if (Build.VERSION.SDK_INT >= AndroidVersions.API_26_ANDROID_8_0) {
-            format.setInteger(MediaFormat.KEY_LATENCY, 1);   // 零延迟 pipeline 缓冲
-        }
-        format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR);
-        if (videoMimeType.equals(MediaFormat.MIMETYPE_VIDEO_AVC)) {
-            format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline);
-        }
-        if (maxFps > 0) {
-            format.setFloat(KEY_MAX_FPS_TO_ENCODER, maxFps);
-        }
 
         // SurfaceEncoder.createFormat
 //        if (videoMimeType.equals(MediaFormat.MIMETYPE_VIDEO_AVC)) {
@@ -586,7 +569,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
 
     /**
      * 处理来自 WebRTC / 网络的拥塞控制与关键帧反馈 (在编码线程执行)
-     *
      * 修复要点：
      * 1. BitrateLadder 更新节流到 100ms，避免高频回调打乱防抖计时
      * 2. 帧率热更新同步到 Capture（VideoConstraints），不触发 codec reset

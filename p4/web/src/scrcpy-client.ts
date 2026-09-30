@@ -50,9 +50,7 @@ export class ScrcpyClient {
       this.callbacks.onStateChange('failed'); this.callbacks.onError(message);
     };
     const url = new URL(options.signalingUrl);
-    const saved = readResumeSession();
-    const restoredToken = saved?.url === url.href ? saved.token : '';
-    if (!restoredToken && options.sessionToken.length < 32) { invalid('请输入有效的会话凭证'); return; }
+    if (!options.sessionToken) { invalid('请输入会话凭证'); return; }
     if (url.protocol !== 'wss:' && !(url.protocol === 'ws:')) {
       invalid('远程连接需要 wss:// 地址'); return;
     }
@@ -61,14 +59,13 @@ export class ScrcpyClient {
     }
     this.callbacks.onStateChange('connecting');
     const started = performance.now();
-    const pc = new RTCPeerConnection({ iceServers: options.iceServers, iceTransportPolicy: options.iceTransportPolicy ?? 'all' });
+    const pc = new RTCPeerConnection({ iceServers: options.iceServers, iceTransportPolicy: options.iceTransportPolicy ?? 'all', bundlePolicy: 'max-bundle' });
     this.pc = pc;
     const current = (): boolean => this.pc === pc;
     const trace = (stage: string): void => {
       if (current()) { this.callbacks.onDiagnostic?.(`${Math.round(performance.now() - started)}ms ${stage}`); }
     };
     trace('H5 recovery build: reload-diagnostics-v1');
-    trace(`恢复缓存: ${restoredToken ? '命中当前地址' : saved ? '地址不匹配' : '无可用缓存'}`);
     trace('连接开始');
     const fail = (message: string): void => {
       if (!current()) { return; }
@@ -76,14 +73,12 @@ export class ScrcpyClient {
       this.close(); this.callbacks.onStateChange('failed'); this.callbacks.onError(message);
     };
     this.timeout = setTimeout(() => fail('连接超时，请申请新会话后重试'), 30000);
-    let resumeToken = restoredToken;
     const peerId = newPeerId();
     let freshPeer = true;
-    let retriedAuth = false;
     this.resumeUrl = url.href;
-    this.resumeSecret = resumeToken;
+    this.resumeSecret = options.sessionToken;
     const remember = (): void => {
-      if (resumeToken) { saveResumeSession(url.href, resumeToken); }
+      if (options.sessionToken) { saveResumeSession(url.href, options.sessionToken); }
     };
     let ready = false;
     let recovering = false;
@@ -208,15 +203,14 @@ export class ScrcpyClient {
         this.ws = null;
         ready = false;
         ws.close();
-        if (!resumeToken) { fail(`${reason}，请申请新会话后连接`); return; }
-        recover(reason);
+        fail(`${reason}，请申请新会话后连接`);
       };
       // Covers both opening and authentication, including a silently blackholed socket.
       this.socketTimeout = setTimeout(() => lost('信令连接超时'), 5000);
       ws.onopen = () => {
         if (!active()) { return; }
-        trace(`WebSocket 已打开，认证方式=${resumeToken ? 'resume' : 'auth'}`);
-        ws.send(JSON.stringify({ type: resumeToken ? 'resume' : 'auth', token: resumeToken || options.sessionToken, peerId }));
+        trace(`WebSocket 已打开，发送 join 认证`);
+        ws.send(JSON.stringify({ type: 'join', token: options.sessionToken, room: 'default' }));
       };
       ws.onmessage = (event) => {
         messages = messages.then(async () => {
@@ -224,11 +218,6 @@ export class ScrcpyClient {
           const msg = JSON.parse(event.data as string);
           if (msg.type === 'ready' && !ready) {
             clearSocketTimeout();
-            if (freshPeer && resumeToken && msg.resumed && msg.peerId !== peerId) {
-              fail('服务端不支持页面刷新恢复，请更新 Android 服务端后创建新会话'); return;
-            }
-            if (typeof msg.resumeToken === 'string') { resumeToken = msg.resumeToken; }
-            this.resumeSecret = resumeToken;
             this.authenticatedSocket = true;
             remember();
             freshPeer = false;
@@ -239,12 +228,12 @@ export class ScrcpyClient {
               ws.send(JSON.stringify({ type: 'ping' }));
               this.socketTimeout = setTimeout(() => lost('信令心跳超时'), 5000);
             }, 3000);
-            trace(`服务端恢复协议: ${msg.protocolVersion === 2 ? 'v2' : '未标识版本'}`);
-            trace(msg.resumed ? '信令会话已恢复' : '鉴权完成');
+            trace(`服务端协议: ${msg.protocolVersion === 2 ? 'v2' : '未标识版本'}`);
+            trace(`已加入房间: roomId=${msg.roomId} clientId=${msg.clientId}`);
             // Discard a negotiation whose answer may have been lost with the old socket.
             awaitingAnswer = false;
             offerSentAt = -Infinity;
-            await offer(Boolean(msg.resumed));
+            await offer(false);
           } else if (msg.type === 'pong' && ready) {
             clearSocketTimeout();
             remember();
@@ -274,17 +263,7 @@ export class ScrcpyClient {
           if (event.reason === 'Peer reset failed') {
             fail('服务端连接重建失败，请重新编译 JNI 和 Android 服务端'); return;
           }
-          if (!ready && resumeToken && !retriedAuth && options.sessionToken.length >= 32
-              && ['Authentication rejected', 'RESUME_TOKEN_INVALID', 'RESUME_NOT_AVAILABLE'].includes(event.reason)) {
-            // A restarted server has a new session secret. Try an explicitly supplied
-            // login token once; never make a consumed login token reusable server-side.
-            clearSocketTimeout();
-            trace('恢复认证不匹配，尝试一次手动输入的首次凭证');
-            forgetResumeSession(url.href);
-            resumeToken = ''; this.resumeSecret = ''; retriedAuth = true;
-            this.ws = null;
-            openSocket();
-          } else { fail(REJECTION_MESSAGES[reason] ?? '服务端拒绝连接（1008，未提供原因），请提供页面诊断日志'); }
+          fail(REJECTION_MESSAGES[reason] ?? '服务端拒绝连接（1008，未提供原因），请提供页面诊断日志');
         }
         else { lost('信令连接中断'); }
       };

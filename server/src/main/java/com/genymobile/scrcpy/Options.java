@@ -1,6 +1,7 @@
 package com.genymobile.scrcpy;
 
 import com.genymobile.scrcpy.audio.AudioCodec;
+import com.genymobile.scrcpy.audio.AudioScheme;
 import com.genymobile.scrcpy.audio.AudioSource;
 import com.genymobile.scrcpy.device.Device;
 import com.genymobile.scrcpy.model.CodecOption;
@@ -29,10 +30,21 @@ public class Options {
     private String turnUrl = "";
     private String turnUser = "";
     private String turnPassword = "";
+    private String publicIp = "";
+    private int localMinPort;
+    private int localMaxPort;
+    private int externalMinPort;
+    private int externalMaxPort;
+    private AudioScheme audioScheme = AudioScheme.PCM;
     public String getSignalToken() { return signalToken; }
     public String getTurnUrl() { return turnUrl; }
     public String getTurnUser() { return turnUser; }
     public String getTurnPassword() { return turnPassword; }
+    public String getPublicIp() { return publicIp; }
+    public int getLocalMinPort() { return localMinPort; }
+    public int getLocalMaxPort() { return localMaxPort; }
+    public int getExternalMinPort() { return externalMinPort; }
+    public int getExternalMaxPort() { return externalMaxPort; }
 
     private boolean video = true;
     private boolean audio = true;
@@ -107,6 +119,10 @@ public class Options {
 
     public int getSignalPort() {
         return signalPort;
+    }
+
+    public AudioScheme getAudioScheme() {
+        return audioScheme;
     }
 
     public boolean getVideo() {
@@ -367,8 +383,20 @@ public class Options {
                 case "turn_url": options.turnUrl = value; break;
                 case "turn_user": options.turnUser = value; break;
                 case "turn_password": options.turnPassword = value; break;
+                case "public_ip": options.publicIp = value; break;
+                case "local_min_port": options.localMinPort = Integer.parseInt(value); break;
+                case "local_max_port": options.localMaxPort = Integer.parseInt(value); break;
+                case "external_min_port": options.externalMinPort = Integer.parseInt(value); break;
+                case "external_max_port": options.externalMaxPort = Integer.parseInt(value); break;
                 case "signal_port":
                     options.signalPort = Integer.parseInt(value);
+                    break;
+                case "audio_scheme":
+                    AudioScheme audioScheme = AudioScheme.findByName(value);
+                    if (audioScheme == null) {
+                        throw new IllegalArgumentException("Audio scheme " + value + " not supported");
+                    }
+                    options.audioScheme = audioScheme;
                     break;
                 case "log_level":
                     options.logLevel = Ln.Level.valueOf(value.toUpperCase(Locale.ENGLISH));

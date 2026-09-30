@@ -1,5 +1,6 @@
 package com.genymobile.scrcpy.device;
 
+import com.genymobile.scrcpy.audio.AudioCodec;
 import com.genymobile.scrcpy.model.Codec;
 
 import android.media.MediaCodec;
@@ -86,6 +87,10 @@ public class WebRtcPacketSink implements PacketSink {
     }
 
     private void writeAudioPacket(ByteBuffer buffer, long pts) {
-        bridge.pushPcm(buffer, pts);
+        if (codec == AudioCodec.OPUS) {
+            bridge.pushOpusFrame(buffer, pts);
+        } else {
+            bridge.pushPcm(buffer, pts);
+        }
     }
 }

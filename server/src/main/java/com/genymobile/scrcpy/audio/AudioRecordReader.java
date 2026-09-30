@@ -29,9 +29,13 @@ public class AudioRecordReader {
 
     @TargetApi(AndroidVersions.API_24_ANDROID_7_0)
     public int read(ByteBuffer outDirectBuffer, MediaCodec.BufferInfo outBufferInfo) {
-        int r = recorder.read(outDirectBuffer, AudioConfig.MAX_READ_SIZE);
-        if (r <= 0) {
+        int r = recorder.read(outDirectBuffer, AudioConfig.MAX_READ_SIZE, AudioRecord.READ_NON_BLOCKING);
+        if (r < 0) {
+            Ln.e("AudioRecord.read() error: " + r);
             return r;
+        }
+        if (r == 0) {
+            return 0;
         }
 
         long pts;

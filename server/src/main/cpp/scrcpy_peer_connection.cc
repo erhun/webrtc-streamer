@@ -13,6 +13,7 @@
 #include "api/video_codecs/builtin_video_decoder_factory.h"
 #include "pc/peer_connection_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
+#include "scrcpy_audio_encoder_factory.h"
 #include "scrcpy_passthrough_encoder.h"
 #include "scrcpy_video_encoder_factory.h"
 
@@ -171,28 +172,31 @@ ScrcpyPeerConnection::~ScrcpyPeerConnection() {
             ClosePeerConnection();
             factory_ = nullptr;
             audio_source_ = nullptr;
+            opus_queue_.reset();
         });
-        signaling_thread_->Stop();
     }
-    if (worker_thread_ != nullptr) { worker_thread_->Stop(); }
-    if (network_thread_ != nullptr) { network_thread_->Stop(); }
 }
 
 bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSource> track_source,
-        bool audio, const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
-        std::function<void(int, double)> bitrate, std::function<void()> keyframe) {
+        bool audio, const std::string& audio_scheme,
+        const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
+        std::function<void(int, double)> bitrate, std::function<void()> keyframe,
+        webrtc::Thread* network_thread, webrtc::Thread* worker_thread, webrtc::Thread* signaling_thread) {
     video_source_ = track_source;
     keyframe_callback_ = keyframe;
-    network_thread_ = webrtc::Thread::CreateWithSocketServer();
-    worker_thread_ = webrtc::Thread::Create();
-    signaling_thread_ = webrtc::Thread::Create();
-    network_thread_->Start(); worker_thread_->Start(); signaling_thread_->Start();
+    audio_scheme_ = audio_scheme;
+    if (audio && audio_scheme == "opus") {
+        opus_queue_ = std::make_shared<OpusFrameQueue>();
+    }
+    network_thread_ = network_thread;
+    worker_thread_ = worker_thread;
+    signaling_thread_ = signaling_thread;
     bool success = false;
     signaling_thread_->BlockingCall([&] {
         webrtc::PeerConnectionFactoryDependencies deps;
-        deps.network_thread = network_thread_.get();
-        deps.worker_thread = worker_thread_.get();
-        deps.signaling_thread = signaling_thread_.get();
+        deps.network_thread = network_thread_;
+        deps.worker_thread = worker_thread_;
+        deps.signaling_thread = signaling_thread_;
         // Enable periodic ALR probing so the BWE measures real network capacity
         // instead of staying application-limited by the passthrough encoder's
         // content-dependent output rate.
@@ -205,7 +209,7 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         auto env = webrtc::CreateEnvironment(&field_trials);
         deps.env = env;
         deps.adm = webrtc::CreateAudioDeviceModule(env, webrtc::AudioDeviceModule::kDummyAudio);
-        deps.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
+        deps.audio_encoder_factory = scrcpy::CreateScrcpyAudioEncoderFactory(audio_scheme, opus_queue_);
         deps.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
         deps.video_encoder_factory = std::make_unique<ScrcpyVideoEncoderFactory>(
             [this, bitrate](int bps, double fps) {
@@ -219,7 +223,15 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
             webrtc::PeerConnectionInterface::IceServer turn;
             turn.uri = turn_url; turn.username = turn_user; turn.password = turn_password;
             configuration_.servers.push_back(turn);
+        } else {
+            webrtc::PeerConnectionInterface::IceServer stun;
+            stun.uri = "stun:stun.l.google.com:19302";
+            configuration_.servers.push_back(stun);
         }
+        configuration_.bundle_policy = webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
+        configuration_.set_min_port(10001);
+        configuration_.set_max_port(10004);
+        configuration_.ice_candidate_pool_size = 0;
         if (audio) { audio_source_ = webrtc::make_ref_counted<PcmAudioSource>(); }
         success = CreatePeerConnection();
     });
@@ -276,6 +288,16 @@ bool ScrcpyPeerConnection::ResetPeerConnection() {
 
 void ScrcpyPeerConnection::PushAudio(const uint8_t* data, size_t len, int64_t pts_us) {
     if (audio_source_ != nullptr) { audio_source_->Push(data, len, pts_us); }
+}
+
+void ScrcpyPeerConnection::PushOpusFrame(const uint8_t* data, size_t len, int64_t pts_us) {
+    if (opus_queue_ == nullptr) { return; }
+    opus_queue_->Push(data, len);
+    if (audio_source_ != nullptr) {
+        static constexpr size_t kSilenceBytes = 960 * 2 * 2;
+        uint8_t silence[kSilenceBytes] = {};
+        audio_source_->Push(silence, kSilenceBytes, pts_us);
+    }
 }
 void ScrcpyPeerConnection::SetClosedCallback(std::function<void()> callback) {
     signaling_thread_->BlockingCall([&] { closed_callback_ = std::move(callback); });

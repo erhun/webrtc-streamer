@@ -32,8 +32,8 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
 
   const connectBar = el('div', 'connect-bar');
   const urlInput = el('input', 'url-input') as HTMLInputElement;
-  urlInput.placeholder = 'ws://云机IP:8080';
-  urlInput.value = 'ws://10.20.8.87:8080';
+  urlInput.placeholder = 'ws://183.240.23.14:20614';
+  urlInput.value = 'ws://183.240.23.14:20614';
   const connectBtn = el('button', 'connect-btn', '连接');
   const tokenInput = el('input', 'token-input') as HTMLInputElement;
   tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证'; tokenInput.autocomplete = 'off';
@@ -157,7 +157,9 @@ function main(): void {
       signalingUrl: url,
       iceTransportPolicy: queryParam('ice') === 'relay' ? 'relay' : 'all',
       sessionToken: (document.querySelector('.token-input') as HTMLInputElement).value,
-      iceServers: TURN_URL ? [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }] : [],
+      iceServers: TURN_URL
+        ? [{ urls: 'stun:stun.l.google.com:19302' }, { urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }]
+        : [{ urls: 'stun:stun.l.google.com:19302' }],
     });
 
     (window as unknown as { __pc: RTCPeerConnection | null }).__pc = client.peerConnection;

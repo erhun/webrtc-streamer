@@ -47,7 +47,7 @@
 ## 端到端联调步骤
 
 1. 部署云机：定制 AOSP + platform 签名 + `/system/priv-app` + init.rc 自启 `ServerService`
-2. 启动云机：`ServerService` 带 `--signal-port=8080` 参数
+2. 启动云机：`ServerService` 带 `--signal-port=10000` 参数
 3. （可选）部署 TURN：`turnserver -c turnserver.conf`
-4. 客户端：浏览器打开 `p4/web/index.html`，填 `ws://云机IP:8080`，点 Connect
+4. 客户端：浏览器打开 `p4/web/index.html`，填 `ws://云机IP:10000`，点 Connect
 5. 验证：视频画面 + 弱网降档

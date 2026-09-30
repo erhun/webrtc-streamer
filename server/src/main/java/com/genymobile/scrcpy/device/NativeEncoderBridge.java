@@ -1,6 +1,7 @@
 package com.genymobile.scrcpy.device;
 
 import java.nio.ByteBuffer;
+import com.genymobile.scrcpy.util.Ln;
 
 /** Per-session JNI handle. Callback entry points never acquire its monitor. */
 public final class NativeEncoderBridge implements AutoCloseable {
@@ -22,10 +23,11 @@ public final class NativeEncoderBridge implements AutoCloseable {
     private volatile SignalCallback signalCallback;
     private volatile DataCallback dataCallback;
     private volatile Runnable closedCallback;
+    private long pcmPushCount;
 
-    public synchronized void open(boolean audio, String turn, String user, String password) {
+    public synchronized void open(boolean audio, int audioScheme, String turn, String user, String password) {
         if (handle != 0) { throw new IllegalStateException("Session already open"); }
-        handle = nativeCreate(audio, turn, user, password);
+        handle = nativeCreate(audio, audioScheme, turn, user, password);
         if (handle == 0) { throw new IllegalStateException("Could not create WebRTC session"); }
     }
     public void setCallback(Callback value) { callback = value; }
@@ -41,7 +43,18 @@ public final class NativeEncoderBridge implements AutoCloseable {
     private native void nativeVideoBitrate(long handle, int bps);
 
     public synchronized void pushPcm(ByteBuffer buffer, long pts) {
-        if (handle != 0) { nativePushPcm(handle, copy(buffer), pts); }
+        if (handle != 0) {
+            pcmPushCount++;
+            if (pcmPushCount == 1 || pcmPushCount % 500 == 0) {
+                Ln.d("NativeEncoderBridge: pushPcm #" + pcmPushCount + ", " + buffer.remaining() + " bytes, handle=" + handle);
+            }
+            nativePushPcm(handle, copy(buffer), pts);
+        } else {
+            Ln.w("NativeEncoderBridge: pushPcm called but handle is 0");
+        }
+    }
+    public synchronized void pushOpusFrame(ByteBuffer buffer, long pts) {
+        if (handle != 0) { nativePushOpusFrame(handle, copy(buffer), pts); }
     }
     public synchronized boolean resetPeer() {
         try {
@@ -84,10 +97,11 @@ public final class NativeEncoderBridge implements AutoCloseable {
     private void onNativeClosed() {
         Runnable target = closedCallback; if (target != null) { target.run(); }
     }
-    private native long nativeCreate(boolean audio, String turn, String user, String password);
+    private native long nativeCreate(boolean audio, int audioScheme, String turn, String user, String password);
     private native void nativeDestroy(long session);
     private native void nativePushVideo(long session, byte[] data, long pts, boolean config, boolean key, int width, int height);
     private native void nativePushPcm(long session, byte[] data, long pts);
+    private native void nativePushOpusFrame(long session, byte[] data, long pts);
     private native void nativeOffer(long session, String sdp);
     private native void nativeIce(long session, String mid, int index, String sdp);
     private native boolean nativeSend(long session, byte[] data);

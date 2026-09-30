@@ -7,6 +7,7 @@
 #include "rtc_base/thread.h"
 
 #include "scrcpy_pcm_audio_source.h"
+#include "opus_frame_queue.h"
 #include <cstdint>
 #include <functional>
 #include <atomic>
@@ -25,10 +26,13 @@ public:
     ~ScrcpyPeerConnection();
 
     bool Initialize(webrtc::scoped_refptr<EncodedVideoTrackSource> track_source,
-            bool audio, const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
-            std::function<void(int, double)> bitrate, std::function<void()> keyframe);
+            bool audio, const std::string& audio_scheme,
+            const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
+            std::function<void(int, double)> bitrate, std::function<void()> keyframe,
+            webrtc::Thread* network_thread, webrtc::Thread* worker_thread, webrtc::Thread* signaling_thread);
     void SetConfiguredVideoBitrate(int bps) { configured_bps_.store(bps); }
     void PushAudio(const uint8_t* data, size_t len, int64_t pts_us);
+    void PushOpusFrame(const uint8_t* data, size_t len, int64_t pts_us);
     void SetClosedCallback(std::function<void()> callback);
     void OnConnectionClosed();
     void OnConnectionReady();
@@ -58,6 +62,8 @@ private:
     webrtc::PeerConnectionInterface::RTCConfiguration configuration_;
     std::shared_ptr<bool> lifetime_ = std::make_shared<bool>(true);
     webrtc::scoped_refptr<PcmAudioSource> audio_source_;
+    std::shared_ptr<OpusFrameQueue> opus_queue_;
+    std::string audio_scheme_;
     std::function<void()> closed_callback_;
     std::function<void()> keyframe_callback_;
     webrtc::scoped_refptr<EncodedVideoTrackSource> video_source_;
@@ -68,9 +74,9 @@ private:
     bool recovering_ = false;
     bool remote_description_set_ = false;
     std::vector<std::unique_ptr<webrtc::IceCandidate>> pending_ice_;
-    std::unique_ptr<webrtc::Thread> network_thread_;
-    std::unique_ptr<webrtc::Thread> worker_thread_;
-    std::unique_ptr<webrtc::Thread> signaling_thread_;
+    webrtc::Thread* network_thread_ = nullptr;
+    webrtc::Thread* worker_thread_ = nullptr;
+    webrtc::Thread* signaling_thread_ = nullptr;
     webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer_connection_;
     std::unique_ptr<webrtc::PeerConnectionObserver> observer_;
