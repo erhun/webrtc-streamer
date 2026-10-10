@@ -8,7 +8,7 @@ export function readResumeSession(): ResumeSession | null {
     if (!raw) { return null; }
     const value = JSON.parse(raw) as ResumeSession;
     if (typeof value.url !== 'string' || !/^wss?:$/.test(new URL(value.url).protocol)
-        || typeof value.token !== 'string' || value.token.length !== 64
+        || typeof value.token !== 'string' || (value.token.length !== 0 && value.token.length !== 64)
         || !Number.isFinite(value.expiresAt) || value.expiresAt <= Date.now()
         || value.expiresAt > Date.now() + MAX_AGE_MS) {
       sessionStorage.removeItem(KEY); return null;

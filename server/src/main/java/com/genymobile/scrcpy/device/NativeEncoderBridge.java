@@ -46,9 +46,22 @@ public final class NativeEncoderBridge implements AutoCloseable {
         if (handle != 0) {
             pcmPushCount++;
             if (pcmPushCount == 1 || pcmPushCount % 500 == 0) {
-                Ln.d("NativeEncoderBridge: pushPcm #" + pcmPushCount + ", " + buffer.remaining() + " bytes, handle=" + handle);
+                // Diagnostic: check if audio is silence
+                byte[] data = copy(buffer);
+                long sum = 0;
+                for (int i = 0; i < data.length; i += 2) {
+                    if (i + 1 < data.length) {
+                        short sample = (short) ((data[i] & 0xFF) | (data[i + 1] << 8));
+                        sum += Math.abs(sample);
+                    }
+                }
+                int sampleCount = data.length / 2;
+                long avgAmplitude = sampleCount > 0 ? sum / sampleCount : 0;
+                Ln.d("NativeEncoderBridge: pushPcm #" + pcmPushCount + ", " + data.length + " bytes, avgAmplitude=" + avgAmplitude + ", handle=" + handle);
+                nativePushPcm(handle, data, pts);
+            } else {
+                nativePushPcm(handle, copy(buffer), pts);
             }
-            nativePushPcm(handle, copy(buffer), pts);
         } else {
             Ln.w("NativeEncoderBridge: pushPcm called but handle is 0");
         }

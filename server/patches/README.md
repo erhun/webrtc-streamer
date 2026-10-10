@@ -21,7 +21,7 @@ The revision identifier alone does not record this local diagnostic modification
 Before connecting, capture logcat using:
 
 ```bash
-adb -s emulator-5554 logcat -v threadtime 'scrcpy_drop:I' 'scrcpy_native:V' 'scrcpy:V' '*:S'
+adb -s emulator-5556 logcat -v threadtime 'scrcpy_drop:I' 'scrcpy_native:V' 'scrcpy:V' '*:S'
 ```
 
 Use the new process PID to exclude previous sessions. Match pts_us across source,

@@ -8,9 +8,11 @@ import org.json.JSONObject;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class ControlManager {
@@ -26,6 +28,7 @@ public final class ControlManager {
     private final Object lock = new Object();
     private String currentController;
     private final Queue<String> waitingQueue = new ArrayDeque<>();
+    private final Set<String> waitingSet = new HashSet<>();
     private final Map<String, ControlForwarder> forwarders = new ConcurrentHashMap<>();
     private final Map<String, ClientSender> senders = new ConcurrentHashMap<>();
     private ControlForwarder controller;
@@ -47,6 +50,7 @@ public final class ControlManager {
         senders.remove(clientId);
         synchronized (lock) {
             waitingQueue.remove(clientId);
+            waitingSet.remove(clientId);
             if (clientId.equals(currentController)) {
                 currentController = null;
                 promoteNext();
@@ -83,8 +87,9 @@ public final class ControlManager {
             if (currentController == null) {
                 currentController = clientId;
                 Ln.i("Client " + clientId + " gained control");
-            } else if (!waitingQueue.contains(clientId)) {
+            } else if (!waitingSet.contains(clientId)) {
                 waitingQueue.add(clientId);
+                waitingSet.add(clientId);
                 Ln.i("Client " + clientId + " added to waiting queue");
             }
         }
@@ -98,6 +103,7 @@ public final class ControlManager {
                 promoteNext();
             } else {
                 waitingQueue.remove(clientId);
+                waitingSet.remove(clientId);
             }
         }
     }
@@ -146,6 +152,7 @@ public final class ControlManager {
     private void promoteNext() {
         while (!waitingQueue.isEmpty()) {
             String next = waitingQueue.poll();
+            waitingSet.remove(next);
             if (forwarders.containsKey(next)) {
                 currentController = next;
                 Ln.i("Client " + next + " gained control from queue");

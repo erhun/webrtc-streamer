@@ -40,13 +40,15 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
 
     /**
      * 硬件编码器优先列表。
-     * 顺序：Qualcomm → Samsung → MediaTek → 通用 OMX 命名。
+     * 顺序：Inno（稳定）→ MediaTek → Qualcomm → Samsung → 通用 OMX。
      * 若设备不存在对应编码器，createByCodecName 会抛异常，自动跳过。
      */
     private static final String[] PREFERRED_HW_ENCODERS = {
+            "OMX.inno.h264.encoder.pvric",
+            "OMX.inno.h264.encoder",
+            "c2.mtk.avc.encoder",
             "c2.qti.avc.encoder",
             "c2.exynos.avc.encoder",
-            "c2.mtk.avc.encoder",
             "OMX.qcom.video.encoder.avc",
             "OMX.Exynos.avc.enc",
             "OMX.MTK.VIDEO.ENCODER.AVC",
@@ -442,39 +444,39 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             }
         }
 
-        // 硬件编码器优先探测
-        if (MediaFormat.MIMETYPE_VIDEO_AVC.equals(codec.getMimeType())) {
-            for (String hw : PREFERRED_HW_ENCODERS) {
-                MediaCodec mc = null;
-                try {
-                    mc = MediaCodec.createByCodecName(hw);
-                    String mime = Codec.getMimeType(mc);
-                    if (!codec.getMimeType().equals(mime)) {
-                        mc.release();
-                        continue;
-                    }
-                    MediaCodecInfo info = mc.getCodecInfo();
-                    // 排除软编（名称含 "android" 或 ".sw."）
-                    if (info != null
-                            && !info.getName().contains("android")
-                            && !info.getName().toLowerCase().contains(".sw.")) {
-                        Ln.d("Using preferred HW encoder: '" + hw + "'");
-                        return mc;
-                    }
-                    mc.release();
-                } catch (Exception ignored) {
-                    // 该硬件编码器不存在或不可用，继续尝试下一个
-                    if (mc != null) {
-                        try { mc.release(); } catch (Exception ignored2) { }
-                    }
-                }
-            }
-            Ln.d("No preferred HW encoder available, falling back to default");
-        }
+        // 跳过硬件编码器优先探测，直接使用默认编码器
+        // if (MediaFormat.MIMETYPE_VIDEO_AVC.equals(codec.getMimeType())) {
+        //     for (String hw : PREFERRED_HW_ENCODERS) {
+        //         MediaCodec mc = null;
+        //         try {
+        //             mc = MediaCodec.createByCodecName(hw);
+        //             String mime = Codec.getMimeType(mc);
+        //             if (!codec.getMimeType().equals(mime)) {
+        //                 mc.release();
+        //                 continue;
+        //             }
+        //             MediaCodecInfo info = mc.getCodecInfo();
+        //             // 排除软编（名称含 "android" 或 ".sw."）
+        //             if (info != null
+        //                     && !info.getName().contains("android")
+        //                     && !info.getName().toLowerCase().contains(".sw.")) {
+        //                 Ln.d("Using preferred HW encoder: '" + hw + "'");
+        //                 return mc;
+        //             }
+        //             mc.release();
+        //         } catch (Exception ignored) {
+        //             // 该硬件编码器不存在或不可用，继续尝试下一个
+        //             if (mc != null) {
+        //                 try { mc.release(); } catch (Exception ignored2) { }
+        //             }
+        //         }
+        //     }
+        //     Ln.d("No preferred HW encoder available, falling back to default");
+        // }
 
         try {
             MediaCodec mediaCodec = MediaCodec.createEncoderByType(codec.getMimeType());
-            Ln.d("Using video encoder: '" + mediaCodec.getName() + "'");
+            Ln.d("Using default video encoder: '" + mediaCodec.getName() + "'");
             return mediaCodec;
         } catch (IOException | IllegalArgumentException e) {
             Ln.e("Could not create default video encoder for " + codec.getName() + "\n" + LogUtils.buildVideoEncoderListMessage());
@@ -486,10 +488,19 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         MediaFormat format = new MediaFormat();
         format.setString(MediaFormat.KEY_MIME, videoMimeType);
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate);
+        // 使用 WebRTC 请求的帧率（不再限制到 20fps）
         int targetFps = (maxFps > 0) ? (int) maxFps : 30;
+        Ln.d("createFormat: maxFps=" + maxFps + " -> targetFps=" + targetFps);
         format.setInteger(MediaFormat.KEY_FRAME_RATE, targetFps);
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+        // 缩短 I 帧间隔到 2 秒（更频繁的关键帧有助于快速恢复）
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, DEFAULT_I_FRAME_INTERVAL);
+
+        // CBR 码率模式（WebRTC 场景推荐，避免帧率波动）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            format.setInteger(MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR);
+        }
 
         // SurfaceEncoder.createFormat
 //        if (videoMimeType.equals(MediaFormat.MIMETYPE_VIDEO_AVC)) {

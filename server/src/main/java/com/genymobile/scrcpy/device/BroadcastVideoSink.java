@@ -1,5 +1,6 @@
 package com.genymobile.scrcpy.device;
 
+import com.genymobile.scrcpy.util.Ln;
 import com.genymobile.scrcpy.video.VideoCodec;
 
 import android.media.MediaCodec;
@@ -19,6 +20,11 @@ public final class BroadcastVideoSink implements PacketSink {
     public void addBridge(NativeEncoderBridge bridge) {
         if (!bridges.contains(bridge)) {
             bridges.add(bridge);
+            if (spsPps != null) {
+                ByteBuffer buf = ByteBuffer.wrap(spsPps);
+                bridge.pushEncodedVideoFrame(buf, 0, true, false, width, height);
+                Ln.d("BroadcastVideoSink: pushed cached SPS/PPS to new bridge (" + spsPps.length + " bytes)");
+            }
         }
     }
 
@@ -77,20 +83,17 @@ public final class BroadcastVideoSink implements PacketSink {
         if (config) {
             spsPps = new byte[buffer.remaining()];
             buffer.get(spsPps);
+            for (NativeEncoderBridge bridge : bridges) {
+                ByteBuffer copy = ByteBuffer.wrap(spsPps);
+                bridge.pushEncodedVideoFrame(copy, pts, true, false, width, height);
+            }
             return;
         }
+        byte[] frameData = new byte[buffer.remaining()];
+        buffer.get(frameData);
         for (NativeEncoderBridge bridge : bridges) {
-            if (keyFrame && spsPps != null) {
-                ByteBuffer combined = ByteBuffer.allocate(spsPps.length + buffer.remaining());
-                combined.put(spsPps);
-                buffer.mark();
-                combined.put(buffer);
-                buffer.reset();
-                combined.flip();
-                bridge.pushEncodedVideoFrame(combined, pts, false, true, width, height);
-            } else {
-                bridge.pushEncodedVideoFrame(buffer, pts, false, keyFrame, width, height);
-            }
+            ByteBuffer copy = ByteBuffer.wrap(frameData);
+            bridge.pushEncodedVideoFrame(copy, pts, false, keyFrame, width, height);
         }
     }
 }

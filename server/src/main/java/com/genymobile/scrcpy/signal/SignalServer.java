@@ -195,14 +195,37 @@ public final class SignalServer implements AutoCloseable {
 
     private void handleJoin(WebSocket conn, ClientSession session, JSONObject msg) throws JSONException {
         String token = msg.optString("token");
-        if (token == null || !constantTimeEquals(signalToken, token)) {
+        if (!signalToken.isEmpty() && (token == null || !constantTimeEquals(signalToken, token))) {
             conn.close(1008, "LOGIN_TOKEN_INVALID");
             return;
         }
         String roomId = msg.optString("room", "default");
-        String clientId = generateClientId();
+        if (roomId.isEmpty() || roomId.length() > 128 || !isValidRoomId(roomId)) {
+            conn.close(1008, "INVALID_ROOM_ID");
+            return;
+        }
+        
+        // 调试模式下允许客户端指定 clientId（用于会话恢复）
+        String clientId = msg.optString("clientId");
+        if (clientId == null || clientId.isEmpty() || !isValidClientId(clientId)) {
+            clientId = generateClientId();
+        }
 
         Room room = rooms.computeIfAbsent(roomId, id -> new Room(id, defaultMaxPeers));
+        
+        // 如果 clientId 已存在，先移除旧连接（页面刷新场景）
+        WebSocket existingConn = room.getClient(clientId);
+        if (existingConn != null) {
+            Ln.i("Replacing existing client: roomId=" + roomId + " clientId=" + clientId);
+            room.removeClient(clientId);
+            ClientSession oldSession = sessions.remove(existingConn);
+            if (oldSession != null) {
+                oldSession.roomId = null;
+                oldSession.clientId = null;
+            }
+            existingConn.close(1000, "Replaced by new connection");
+        }
+        
         String rejection = room.addClient(clientId, conn);
         if (rejection != null) {
             conn.close(1008, rejection);
@@ -251,6 +274,29 @@ public final class SignalServer implements AutoCloseable {
             hex.append(String.format("%02x", b & 0xff));
         }
         return hex.toString();
+    }
+
+    private static boolean isValidRoomId(String roomId) {
+        for (int i = 0; i < roomId.length(); i++) {
+            char c = roomId.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '-' && c != '_') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isValidClientId(String clientId) {
+        if (clientId.length() != 32) {
+            return false;
+        }
+        for (int i = 0; i < clientId.length(); i++) {
+            char c = clientId.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '-' && c != '_') {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static long now() {

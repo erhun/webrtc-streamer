@@ -825,7 +825,7 @@ public class ControlManager {
 ```
 容器端口          公网 IP 端口              用途
 ────────          ──────────────            ────
-10000             183.240.23.14:20614       信令 WebSocket (TCP)
+10000             183.240.23.14:22780       信令 WebSocket (TCP)
 10001             183.240.23.14:20615       WebRTC 媒体 (UDP) min
 10002             183.240.23.14:20616       WebRTC 媒体 (UDP)
 10003             183.240.23.14:20617       WebRTC 媒体 (UDP)
@@ -904,7 +904,7 @@ public void sendIceCandidate(String roomId, String clientId, String mid, int ind
 ### 14.4 数据流
 
 ```
-1. 浏览器连接 ws://183.240.23.14:20614 → 容器:10000（信令 WebSocket）
+1. 浏览器连接 ws://183.240.23.14:22780 → 容器:10000（信令 WebSocket）
 2. offer/answer 交换（SDP 中 ICE candidate 为内网地址）
 3. 服务端收到本地 ICE candidate（如 192.168.0.113:10002）
 4. SdpRewriter 重写为 183.240.23.14:20616

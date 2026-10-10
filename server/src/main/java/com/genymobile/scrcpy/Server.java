@@ -144,8 +144,8 @@ public final class Server {
                 if (!video || options.getVideoCodec() != VideoCodec.H264) {
                     throw new ConfigurationException("WebRTC requires H.264 video");
                 }
-                if (options.getSignalToken().length() < 32) {
-                    throw new ConfigurationException("WebRTC requires signal_token with at least 32 characters");
+                if (!options.getSignalToken().isEmpty() && options.getSignalToken().length() < 32) {
+                    throw new ConfigurationException("signal_token must be empty or at least 32 characters");
                 }
                 bridge = new NativeEncoderBridge();
                 bridge.setClosedCallback(session::stop);
@@ -193,7 +193,7 @@ public final class Server {
                 if (audioSource.isDirect()) {
                     audioCapture = new AudioDirectCapture(audioSource);
                 } else {
-                    audioCapture = new AudioPlaybackCapture(options.getAudioDup());
+                    audioCapture = new AudioPlaybackCapture();
                 }
 
                 audioSink = createAudioSink(bridge, connection, audioCodec, options);
@@ -391,6 +391,10 @@ public final class Server {
                         server.sendIceCandidate(roomId, clientId, mid, index, sdp);
                     }
                 });
+                if (bitrateAggregator != null) {
+                    bitrateAggregator.requestKeyFrame();
+                    Ln.i("Requested keyframe for new client: " + clientId);
+                }
             }
 
             @Override
@@ -414,8 +418,7 @@ public final class Server {
                         Ln.i("Closed additional bridge for client: " + clientId);
                     }
                 }
-                if (clientId.equals(primaryClientId.get())) {
-                    primaryClientId.set(null);
+                if (primaryClientId.compareAndSet(clientId, null)) {
                     Ln.i("Primary client left, stopping session");
                     session.stop();
                 }

@@ -16,7 +16,7 @@ public final class BroadcastAudioSink implements PacketSink {
     private final List<NativeEncoderBridge> bridges = new CopyOnWriteArrayList<>();
     private final Codec codec;
     private long packetCount;
-    private static final long LOG_INTERVAL = 500; // log every 500 packets (~5 seconds)
+    private static final long LOG_INTERVAL = 5000;
 
     public BroadcastAudioSink(Codec codec) {
         this.codec = codec;
@@ -62,11 +62,14 @@ public final class BroadcastAudioSink implements PacketSink {
         if (packetCount == 1 || packetCount % LOG_INTERVAL == 0) {
             Ln.d("BroadcastAudioSink: packet #" + packetCount + ", " + buffer.remaining() + " bytes, " + bridges.size() + " bridges, codec=" + codec);
         }
+        byte[] audioData = new byte[buffer.remaining()];
+        buffer.get(audioData);
         for (NativeEncoderBridge bridge : bridges) {
+            ByteBuffer copy = ByteBuffer.wrap(audioData);
             if (codec == AudioCodec.OPUS) {
-                bridge.pushOpusFrame(buffer, pts);
+                bridge.pushOpusFrame(copy, pts);
             } else {
-                bridge.pushPcm(buffer, pts);
+                bridge.pushPcm(copy, pts);
             }
         }
     }

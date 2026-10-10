@@ -32,11 +32,12 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
 
   const connectBar = el('div', 'connect-bar');
   const urlInput = el('input', 'url-input') as HTMLInputElement;
-  urlInput.placeholder = 'ws://183.240.23.14:20614';
-  urlInput.value = 'ws://183.240.23.14:20614';
+  urlInput.placeholder = 'ws://183.240.23.14:22780';
+  urlInput.value = 'ws://183.240.23.14:22780';
   const connectBtn = el('button', 'connect-btn', '连接');
   const tokenInput = el('input', 'token-input') as HTMLInputElement;
-  tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证'; tokenInput.autocomplete = 'off';
+  tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证（调试模式可留空）'; tokenInput.autocomplete = 'off';
+  tokenInput.value = '';  // 调试模式默认空 token
   connectBar.append(urlInput, tokenInput, connectBtn);
 
   const stage = el('div', 'stage');
@@ -158,8 +159,8 @@ function main(): void {
       iceTransportPolicy: queryParam('ice') === 'relay' ? 'relay' : 'all',
       sessionToken: (document.querySelector('.token-input') as HTMLInputElement).value,
       iceServers: TURN_URL
-        ? [{ urls: 'stun:stun.l.google.com:19302' }, { urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }]
-        : [{ urls: 'stun:stun.l.google.com:19302' }],
+        ? [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }]
+        : [],
     });
 
     (window as unknown as { __pc: RTCPeerConnection | null }).__pc = client.peerConnection;

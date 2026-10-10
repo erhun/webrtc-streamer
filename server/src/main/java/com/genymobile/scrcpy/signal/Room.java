@@ -2,13 +2,13 @@ package com.genymobile.scrcpy.signal;
 
 import org.java_websocket.WebSocket;
 
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 public final class Room {
     private final String roomId;
     private final int maxPeers;
-    private final Map<String, WebSocket> clients = new ConcurrentHashMap<>();
+    private final Map<String, WebSocket> clients = new HashMap<>();
 
     public Room(String roomId, int maxPeers) {
         this.roomId = roomId;
@@ -23,11 +23,11 @@ public final class Room {
         return maxPeers;
     }
 
-    public int getClientCount() {
+    public synchronized int getClientCount() {
         return clients.size();
     }
 
-    public boolean isFull() {
+    public synchronized boolean isFull() {
         return clients.size() >= maxPeers;
     }
 
@@ -46,11 +46,11 @@ public final class Room {
         clients.remove(clientId);
     }
 
-    public WebSocket getClient(String clientId) {
+    public synchronized WebSocket getClient(String clientId) {
         return clients.get(clientId);
     }
 
-    public boolean isEmpty() {
+    public synchronized boolean isEmpty() {
         return clients.isEmpty();
     }
 }

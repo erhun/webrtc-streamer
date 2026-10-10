@@ -1,4 +1,4 @@
-import { readResumeSession, saveResumeSession, forgetResumeSession, newPeerId } from './session-resume';
+import { saveResumeSession, forgetResumeSession, newPeerId } from './session-resume';
 import { configureVideoLatency } from './receiver-latency';
 import { MessageType, MotionEventAction } from './control-message';
 interface IceServer { urls: string; username?: string; credential?: string; }
@@ -43,6 +43,7 @@ export class ScrcpyClient {
   private resumeUrl = '';
   private resumeSecret = '';
   private authenticatedSocket = false;
+  private peerId = '';
   constructor(private readonly callbacks: ScrcpyClientCallbacks) { }
   async connect(options: ConnectOptions): Promise<void> {
     this.close();
@@ -50,7 +51,6 @@ export class ScrcpyClient {
       this.callbacks.onStateChange('failed'); this.callbacks.onError(message);
     };
     const url = new URL(options.signalingUrl);
-    if (!options.sessionToken) { invalid('请输入会话凭证'); return; }
     if (url.protocol !== 'wss:' && !(url.protocol === 'ws:')) {
       invalid('远程连接需要 wss:// 地址'); return;
     }
@@ -73,8 +73,7 @@ export class ScrcpyClient {
       this.close(); this.callbacks.onStateChange('failed'); this.callbacks.onError(message);
     };
     this.timeout = setTimeout(() => fail('连接超时，请申请新会话后重试'), 30000);
-    const peerId = newPeerId();
-    let freshPeer = true;
+    this.peerId = newPeerId();
     this.resumeUrl = url.href;
     this.resumeSecret = options.sessionToken;
     const remember = (): void => {
@@ -210,7 +209,7 @@ export class ScrcpyClient {
       ws.onopen = () => {
         if (!active()) { return; }
         trace(`WebSocket 已打开，发送 join 认证`);
-        ws.send(JSON.stringify({ type: 'join', token: options.sessionToken, room: 'default' }));
+        ws.send(JSON.stringify({ type: 'join', token: options.sessionToken, room: 'default', clientId: this.peerId }));
       };
       ws.onmessage = (event) => {
         messages = messages.then(async () => {
@@ -220,7 +219,6 @@ export class ScrcpyClient {
             clearSocketTimeout();
             this.authenticatedSocket = true;
             remember();
-            freshPeer = false;
             ready = true;
             if (this.heartbeat) { clearInterval(this.heartbeat); }
             this.heartbeat = setInterval(() => {
