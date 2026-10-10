@@ -61,10 +61,8 @@ public final class BitrateLadder {
         public long downgradeStableMs = 3000L;
         /** 严重降档（跨 ≥2 级）的最小冷却间隔 */
         public long severeDowngradeCooldownMs = 1000L;
-        /** 快速升档通道：严重降档后，若网络迅速恢复，可缩短升档防抖 */
-        public long fastUpgradeStableMs = 2000L;
-        /** 触发快速升档通道的条件：距上次严重降档不超过该毫秒数 */
-        public long fastUpgradeWindowMs = 10_000L;
+        /** 反馈间隔超过此值时，不能把无反馈时间算作网络稳定时间。 */
+        public long maxFeedbackGapMs = 2000L;
 
         public Config() {}
 
@@ -75,8 +73,7 @@ public final class BitrateLadder {
             c.upgradeStableMs = upgradeStableMs;
             c.downgradeStableMs = downgradeStableMs;
             c.severeDowngradeCooldownMs = severeDowngradeCooldownMs;
-            c.fastUpgradeStableMs = fastUpgradeStableMs;
-            c.fastUpgradeWindowMs = fastUpgradeWindowMs;
+            c.maxFeedbackGapMs = maxFeedbackGapMs;
             return c;
         }
     }
@@ -98,7 +95,7 @@ public final class BitrateLadder {
 
     private volatile int level;
     private long lastChangeMs = Long.MIN_VALUE;
-    private long lastSevereDowngradeMs = Long.MIN_VALUE;
+    private long lastFeedbackMs = Long.MIN_VALUE;
 
     private long upgradeSinceMs = -1;
     private long downgradeSinceMs = -1;
@@ -126,6 +123,9 @@ public final class BitrateLadder {
         if (config == null) {
             throw new IllegalArgumentException("Config must not be null");
         }
+        if (config.maxFeedbackGapMs <= 0) {
+            throw new IllegalArgumentException("Maximum feedback gap must be positive");
+        }
         this.levels = levels.clone();
         this.config = config.copy();
         this.level = clamp(initialLevel, 0, this.levels.length - 1);
@@ -149,11 +149,28 @@ public final class BitrateLadder {
     }
 
     // ==================== 核心更新 ====================
+    /** Invalidate network observations after a pause or peer replacement, without changing the applied tier. */
+    public synchronized void resetFeedback() {
+        lastFeedbackMs = Long.MIN_VALUE;
+        upgradeSinceMs = -1;
+        downgradeSinceMs = -1;
+        targetDowngradeLevel = -1;
+    }
+
     public synchronized boolean update(int bps) {
         return update(bps, System.nanoTime() / 1_000_000);
     }
 
     public synchronized boolean update(int bps, long nowMs) {
+        if (bps <= 0) {
+            resetFeedback();
+            return false;
+        }
+        if (lastFeedbackMs != Long.MIN_VALUE
+                && (nowMs < lastFeedbackMs || nowMs - lastFeedbackMs > config.maxFeedbackGapMs)) {
+            resetFeedback();
+        }
+        lastFeedbackMs = nowMs;
         int oldLevel = level;
         int newLevel = computeTargetLevel(bps);
 
@@ -166,12 +183,10 @@ public final class BitrateLadder {
             downgradeSinceMs = -1;
             targetDowngradeLevel = -1;
 
-            long requiredStable = resolveUpgradeStableMs(nowMs);
-
             if (upgradeSinceMs < 0) {
                 upgradeSinceMs = nowMs;
             }
-            if (nowMs - upgradeSinceMs < requiredStable) {
+            if (nowMs - upgradeSinceMs < config.upgradeStableMs) {
                 return false;
             }
         } else {
@@ -224,10 +239,6 @@ public final class BitrateLadder {
             downgradeSinceMs = -1;
             targetDowngradeLevel = -1;
 
-            if (isSevereDowngrade) {
-                lastSevereDowngradeMs = nowMs;
-            }
-
             level = newLevel;
 
             if (listener != null) {
@@ -250,24 +261,13 @@ public final class BitrateLadder {
         while (newLevel > 0 && bps < levels[newLevel].bitRate * config.downscaleFactor) {
             newLevel--;
         }
-        // 升级
-        while (newLevel < levels.length - 1
+        // A lower tier's stability window must never authorize a jump to a higher candidate.
+        // Each successful upgrade resets the timer, so every next tier needs its own stable window.
+        if (newLevel == level && newLevel < levels.length - 1
                 && bps > levels[newLevel + 1].bitRate * config.upscaleFactor) {
             newLevel++;
         }
         return newLevel;
-    }
-
-    /**
-     * 快速升档通道：如果最近发生过严重降档，且现在网络快速恢复，
-     * 使用更短的升档防抖时间，避免"降得太狠、升得太慢"。
-     */
-    private long resolveUpgradeStableMs(long nowMs) {
-        if (lastSevereDowngradeMs != Long.MIN_VALUE
-                && (nowMs - lastSevereDowngradeMs) <= config.fastUpgradeWindowMs) {
-            return config.fastUpgradeStableMs;
-        }
-        return config.upgradeStableMs;
     }
 
     private static int clamp(int v, int min, int max) {

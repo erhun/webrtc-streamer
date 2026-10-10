@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 root = Path(__file__).resolve().parents[1]
 os.chdir(root)
@@ -11,6 +12,7 @@ node = os.environ.get('NODE', 'node')
 source = 'server/src/main/java/com/genymobile/scrcpy/'
 def run(*args):
     subprocess.run(list(args), check=True)
+run(sys.executable, 'tests/run_video_adaptation.py')
 with tempfile.TemporaryDirectory(prefix='streaming-tests-', dir=root / 'tests') as temp:
     run(java, '-m', 'jdk.compiler/com.sun.tools.javac.Main', '-d', temp,
         source + 'device/NativeEncoderBridge.java', source + 'device/DataChannelInputStream.java',

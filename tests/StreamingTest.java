@@ -1,6 +1,5 @@
 import com.genymobile.scrcpy.device.DataChannelInputStream;
 import com.genymobile.scrcpy.signal.SessionAdmission;
-import com.genymobile.scrcpy.video.BitrateLadder;
 import com.genymobile.scrcpy.video.CaptureRefreshGate;
 import java.util.concurrent.atomic.AtomicBoolean;
 public final class StreamingTest {
@@ -58,19 +57,7 @@ public final class StreamingTest {
         earlyRate.onBitrate(200000);
         check(!earlyRate.consumeBootstrapRefresh(true)); // Coalesce with send-ready refresh.
         check(earlyRate.consumeRefresh());
-        BitrateLadder startup = new BitrateLadder();
-        check(startup.update(200000, 0));
-        check(startup.current().getMaxSize() == 854 && startup.current().getFps() == 24);
-        check(!startup.update(199167, 100));
-        check(!startup.update(198333, 200));
-        check(!startup.update(13000000, 1000));
-        check(startup.update(13000000, 6000));
-        check(startup.current().getMaxSize() == 1920);
-        BitrateLadder ladder = new BitrateLadder();
-        check(ladder.update(1500000, 0)); check(ladder.current().getMaxSize() == 960);
-        check(!ladder.update(13000000, 1000)); check(!ladder.update(13000000, 5999));
-        check(ladder.update(13000000, 6000)); check(ladder.current().getFps() == 60);
-        check(ladder.update(500000, 7000)); check(ladder.current().getMaxSize() == 854);
+        // Tier stability and bitrate ramping are covered by VideoAdaptationTest.
         AtomicBoolean overflow = new AtomicBoolean();
         DataChannelInputStream stream = new DataChannelInputStream(() -> overflow.set(true));
         stream.onData(new byte[0]); stream.onData(new byte[]{1, 2}); stream.onData(new byte[]{3});

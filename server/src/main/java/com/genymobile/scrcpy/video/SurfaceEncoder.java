@@ -54,11 +54,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             "OMX.MTK.VIDEO.ENCODER.AVC",
     };
 
-    /**
-     * BitrateLadder 更新节流间隔，避免高频 onBitrate 回调打乱防抖计时。
-     */
-    private static final long LADDER_UPDATE_INTERVAL_MS = 100L;
-
     private final SurfaceCapture capture;
     private final PacketSink streamer;
     private final String encoderName;
@@ -80,10 +75,12 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final CaptureControl captureControl = new CaptureControl();
 
     private final BitrateLadder bitrateLadder = new BitrateLadder();
+    private final BitrateRamp bitrateRamp;
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
     private boolean pendingKeyFrame;
     private boolean pendingPeerRefresh;
+    private boolean pendingRatePause;
     private final CaptureRefreshGate captureRefreshGate = new CaptureRefreshGate();
     private int adaptiveMaxSize;
     private boolean suspended;
@@ -97,17 +94,13 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private float targetFps;
     private float encoderFps;
 
-    /**
-     * BitrateLadder 节流计时器。
-     */
-    private long lastLadderUpdateMs = 0;
-
     private VideoConstraints videoConstraints;
 
     public SurfaceEncoder(SurfaceCapture capture, PacketSink streamer, Options options) {
         this.capture = capture;
         this.streamer = streamer;
         this.videoBitRate = options.getVideoBitRate();
+        this.bitrateRamp = new BitrateRamp(videoBitRate);
         this.maxSize = options.getMaxSize();
         this.maxFps = options.getMaxFps();
         this.requestedMaxFps = maxFps;
@@ -561,7 +554,13 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
 
     @Override
     public void onBitrate(int bps, double fps) {
-        synchronized (feedbackLock) { pendingBitrate = Math.max(0, bps); }
+        synchronized (feedbackLock) {
+            pendingBitrate = Math.max(0, bps);
+            // Observe every feedback event, even if codec reset coalesces multiple callbacks.
+            // Otherwise a short budget dip/zero can disappear before applyFeedback sees it.
+            bitrateLadder.update(pendingBitrate, SystemClock.elapsedRealtime());
+            pendingRatePause |= pendingBitrate == 0;
+        }
     }
 
     @Override
@@ -574,6 +573,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         synchronized (feedbackLock) {
             pendingPeerRefresh = true;
             pendingKeyFrame = false;
+            pendingRatePause = true;
+            bitrateLadder.resetFeedback();
             // 不清空 pendingBitrate：保留最新带宽反馈，让 applyFeedback 基于最新 bps 重新决策
         }
     }
@@ -581,7 +582,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     /**
      * 处理来自 WebRTC / 网络的拥塞控制与关键帧反馈 (在编码线程执行)
      * 修复要点：
-     * 1. BitrateLadder 更新节流到 100ms，避免高频回调打乱防抖计时
+     * 1. 在反馈入口观察全部样本，编码线程使用同一预算和档位快照
      * 2. 帧率热更新同步到 Capture（VideoConstraints），不触发 codec reset
      * 3. targetFps 与 encoderFps 分离，避免热更新污染编码器创建参数
      * 4. 增强档位切换日志（bps / reason / delta）
@@ -593,6 +594,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         int bps;
         boolean keyFrame;
         boolean peerRefresh;
+        boolean ratePause;
+        BitrateLadder.Level level;
         synchronized (feedbackLock) {
             bps = pendingBitrate;
             pendingBitrate = -1;
@@ -600,6 +603,13 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             pendingKeyFrame = false;
             peerRefresh = pendingPeerRefresh;
             pendingPeerRefresh = false;
+            ratePause = pendingRatePause;
+            pendingRatePause = false;
+            level = bitrateLadder.current();
+        }
+
+        if (ratePause) {
+            bitrateRamp.pause();
         }
 
         if (peerRefresh) {
@@ -636,15 +646,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 keyFrame |= suspended;
                 suspended = false;
 
-                // ============ BitrateLadder 节流更新 ============
                 long now = SystemClock.elapsedRealtime();
-                if (now - lastLadderUpdateMs >= LADDER_UPDATE_INTERVAL_MS) {
-                    bitrateLadder.update(bps, now);
-                    lastLadderUpdateMs = now;
-                }
-                BitrateLadder.Level level = bitrateLadder.current();
-
-                int targetBitrate = Math.max(1, Math.min(bps, level.getBitRate()));
+                int targetBitrate = bitrateRamp.update(Math.min(bps, level.getBitRate()), now);
                 float nextFps = requestedMaxFps > 0
                         ? Math.min(requestedMaxFps, level.getFps())
                         : level.getFps();
