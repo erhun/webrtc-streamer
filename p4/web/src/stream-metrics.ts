@@ -3,11 +3,12 @@ export function mountMetrics(video: HTMLVideoElement, getPeer: () => RTCPeerConn
   const bar = document.createElement('div');
   bar.className = 'stream-metrics';
   bar.setAttribute('aria-label', '实时串流统计');
-  const fields = ['帧率', '视频码率', '分辨率', '连接质量', '往返延迟', '丢包率'].map(label => {
+  const fields = ['解码帧率', '视频码率', '分辨率', '连接质量', '往返延迟', '丢包率'].map(label => {
     const node = document.createElement('span');
     bar.append(node);
     return { node, label };
   });
+  fields[0].node.title = '浏览器 framesDecoded 的区间增量，不是 MediaCodec 编码帧率或屏幕呈现帧率';
   fields[3].node.className = 'quality';
   fields[3].node.title = '根据往返延迟和接收丢包率估算，不是 Wi-Fi 信号强度';
   video.closest('.stage')!.before(bar);

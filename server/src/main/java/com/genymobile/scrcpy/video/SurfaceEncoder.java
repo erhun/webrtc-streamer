@@ -75,12 +75,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final CaptureControl captureControl = new CaptureControl();
 
     private final BitrateLadder bitrateLadder = new BitrateLadder();
-    private final BitrateRamp bitrateRamp;
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
     private boolean pendingKeyFrame;
     private boolean pendingPeerRefresh;
-    private boolean pendingRatePause;
     private final CaptureRefreshGate captureRefreshGate = new CaptureRefreshGate();
     private int adaptiveMaxSize;
     private boolean suspended;
@@ -100,7 +98,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         this.capture = capture;
         this.streamer = streamer;
         this.videoBitRate = options.getVideoBitRate();
-        this.bitrateRamp = new BitrateRamp(videoBitRate);
         this.maxSize = options.getMaxSize();
         this.maxFps = options.getMaxFps();
         this.requestedMaxFps = maxFps;
@@ -559,7 +556,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             // Observe every feedback event, even if codec reset coalesces multiple callbacks.
             // Otherwise a short budget dip/zero can disappear before applyFeedback sees it.
             bitrateLadder.update(pendingBitrate, SystemClock.elapsedRealtime());
-            pendingRatePause |= pendingBitrate == 0;
         }
     }
 
@@ -573,7 +569,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         synchronized (feedbackLock) {
             pendingPeerRefresh = true;
             pendingKeyFrame = false;
-            pendingRatePause = true;
             bitrateLadder.resetFeedback();
             // 不清空 pendingBitrate：保留最新带宽反馈，让 applyFeedback 基于最新 bps 重新决策
         }
@@ -594,7 +589,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         int bps;
         boolean keyFrame;
         boolean peerRefresh;
-        boolean ratePause;
         BitrateLadder.Level level;
         synchronized (feedbackLock) {
             bps = pendingBitrate;
@@ -603,13 +597,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             pendingKeyFrame = false;
             peerRefresh = pendingPeerRefresh;
             pendingPeerRefresh = false;
-            ratePause = pendingRatePause;
-            pendingRatePause = false;
             level = bitrateLadder.current();
-        }
-
-        if (ratePause) {
-            bitrateRamp.pause();
         }
 
         if (peerRefresh) {
@@ -646,8 +634,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 keyFrame |= suspended;
                 suspended = false;
 
-                long now = SystemClock.elapsedRealtime();
-                int targetBitrate = bitrateRamp.update(Math.min(bps, level.getBitRate()), now);
+                // Apply the latest encoder budget directly within this tier. An application ramp
+                // driven only by SetRates can stall forever when the allocation stops changing.
+                // Resolution/fps upgrades remain guarded by BitrateLadder; RTP pacing stays in WebRTC.
+                int targetBitrate = Math.max(1, Math.min(bps, level.getBitRate()));
                 float nextFps = requestedMaxFps > 0
                         ? Math.min(requestedMaxFps, level.getFps())
                         : level.getFps();

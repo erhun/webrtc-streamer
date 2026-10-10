@@ -30,7 +30,7 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
   bar.className = 'stream-metrics';
   const labels = ['采集帧龄', '发送排队', '接收缓冲', '分配码率', '配置码率', '编码输出', '目标缓冲', '最低缓冲', '解码耗时'];
   const tips = ['屏幕 PTS 到服务端 JNI 入口，含编码；区间每帧均值',
-    '视频 RTP 包进入发送缓冲到发出；区间每包均值，不含网络传输',
+    '本区间已发出的视频 RTP 包的平均本地等待时间；不是当前队列长度或最老包年龄，不含网络传输',
     '浏览器视频抖动缓冲驻留；区间每帧均值，不含后续显示',
     'WebRTC SetRates 分配的视频预算，不是链路总带宽',
     'MediaCodec 最近成功配置的目标码率；暂停时可能保留旧配置',
@@ -48,7 +48,7 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
   let sendDelay: number | null = null, receiveDelay: number | null = null;
   const updateHealth = (): void => {
     health.textContent = sendDelay === null || receiveDelay === null ? '播放延迟：采样中'
-      : sendDelay > 150 ? '播放延迟：发送积压'
+      : sendDelay > 150 ? '播放延迟：发送等待偏高'
       : receiveDelay > 200 ? '播放延迟：接收缓冲偏高'
       : '播放延迟：排队与缓冲较低';
     health.style.color = (sendDelay ?? 0) > 150 || (receiveDelay ?? 0) > 200 ? '#ffb86c' : '#ddd';

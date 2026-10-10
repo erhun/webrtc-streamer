@@ -61,8 +61,6 @@ public final class BitrateLadder {
         public long downgradeStableMs = 3000L;
         /** 严重降档（跨 ≥2 级）的最小冷却间隔 */
         public long severeDowngradeCooldownMs = 1000L;
-        /** 反馈间隔超过此值时，不能把无反馈时间算作网络稳定时间。 */
-        public long maxFeedbackGapMs = 2000L;
 
         public Config() {}
 
@@ -73,7 +71,6 @@ public final class BitrateLadder {
             c.upgradeStableMs = upgradeStableMs;
             c.downgradeStableMs = downgradeStableMs;
             c.severeDowngradeCooldownMs = severeDowngradeCooldownMs;
-            c.maxFeedbackGapMs = maxFeedbackGapMs;
             return c;
         }
     }
@@ -123,9 +120,6 @@ public final class BitrateLadder {
         if (config == null) {
             throw new IllegalArgumentException("Config must not be null");
         }
-        if (config.maxFeedbackGapMs <= 0) {
-            throw new IllegalArgumentException("Maximum feedback gap must be positive");
-        }
         this.levels = levels.clone();
         this.config = config.copy();
         this.level = clamp(initialLevel, 0, this.levels.length - 1);
@@ -166,8 +160,9 @@ public final class BitrateLadder {
             resetFeedback();
             return false;
         }
-        if (lastFeedbackMs != Long.MIN_VALUE
-                && (nowMs < lastFeedbackMs || nowMs - lastFeedbackMs > config.maxFeedbackGapMs)) {
+        // SetRates is change-driven, not a heartbeat. Silence does not revoke a budget.
+        // A clock regression still invalidates observations; zero/peer reset and lower budgets are handled separately.
+        if (lastFeedbackMs != Long.MIN_VALUE && nowMs < lastFeedbackMs) {
             resetFeedback();
         }
         lastFeedbackMs = nowMs;
