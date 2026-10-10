@@ -57,7 +57,7 @@ public final class StreamingTest {
         earlyRate.onBitrate(200000);
         check(!earlyRate.consumeBootstrapRefresh(true)); // Coalesce with send-ready refresh.
         check(earlyRate.consumeRefresh());
-        // Tier stability and bitrate ramping are covered by VideoAdaptationTest.
+        // Tier stability and sparse rate feedback are covered by VideoAdaptationTest.
         AtomicBoolean overflow = new AtomicBoolean();
         DataChannelInputStream stream = new DataChannelInputStream(() -> overflow.set(true));
         stream.onData(new byte[0]); stream.onData(new byte[]{1, 2}); stream.onData(new byte[]{3});
