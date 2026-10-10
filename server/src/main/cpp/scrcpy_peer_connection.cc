@@ -203,12 +203,9 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         // ForceSendPlayoutDelay negotiates max_playout_delay (500ms default in
         // this string) instead of the 10s default, which enables the receiver's
         // low-latency rendering path and caps the jitter buffer target delay.
-        // Enable ULPFEC/RED for forward error correction to reduce packet loss impact.
         static webrtc::FieldTrials field_trials(
                 "WebRTC-VideoRateControl/alr_probing:true/"
-                "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/"
-                "WebRTC-Ulpfec/Enabled/"
-                "WebRTC-FlexFEC-03/Enabled/");
+                "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/");
         auto env = webrtc::CreateEnvironment(&field_trials);
         deps.env = env;
         deps.adm = webrtc::CreateAudioDeviceModule(env, webrtc::AudioDeviceModule::kDummyAudio);

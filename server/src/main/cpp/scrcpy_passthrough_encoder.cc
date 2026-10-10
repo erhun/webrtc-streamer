@@ -226,11 +226,12 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
 void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters) {
     std::function<void(int, double)> callback;
     std::function<void()> refresh;
-    const int bps = parameters.bitrate.get_sum_bps();
+    const int target_bps = parameters.bitrate.get_sum_bps();
+
     {
         webrtc::MutexLock lock(&mutex_);
         callback = bitrate_callback_;
-        if (bps > 0 && !received_positive_rate_) {
+        if (target_bps > 0 && !received_positive_rate_) {
             received_positive_rate_ = true;
             refresh = key_frame_request_callback_;
         }
@@ -238,9 +239,10 @@ void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters)
     // Deliver the budget first, then request a freshly encoded IDR. Transport
     // readiness alone does not mean VideoStreamEncoder is no longer paused.
     // Do not wait for Encode(delta) to discover the discarded startup IDR.
-    if (callback) { callback(bps, parameters.framerate_fps); }
+    // Rate smoothing is handled by Java BitrateRamp; pass the target through unchanged.
+    if (callback) { callback(target_bps, parameters.framerate_fps); }
     if (refresh) {
-        SCP_LOGE("First positive encoder rate: bps=%d; requesting fresh keyframe", bps);
+        SCP_LOGE("First positive encoder rate: bps=%d; requesting fresh keyframe", target_bps);
         refresh();
     }
 }
