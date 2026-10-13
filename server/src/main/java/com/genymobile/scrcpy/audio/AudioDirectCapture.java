@@ -1,7 +1,7 @@
 package com.genymobile.scrcpy.audio;
 
 import com.genymobile.scrcpy.AndroidVersions;
-import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.RuntimeContext;
 import com.genymobile.scrcpy.Workarounds;
 import com.genymobile.scrcpy.util.Ln;
 import com.genymobile.scrcpy.wrappers.ServiceManager;
@@ -38,7 +38,11 @@ public class AudioDirectCapture implements AudioCapture {
 
     public AudioDirectCapture(AudioSource audioSource, Context context) {
         this.audioSource = audioSource.getDirectAudioSource();
-        applicationContext = context;
+        if (context != null) {
+            RuntimeContext.initialize(context);
+        }
+        RuntimeContext.get(); // Reject an application UID without a real Context before constructing AudioRecord.
+        applicationContext = RuntimeContext.getApplicationContext();
     }
 
     @TargetApi(AndroidVersions.API_23_ANDROID_6_0)
@@ -47,7 +51,7 @@ public class AudioDirectCapture implements AudioCapture {
         AudioRecord.Builder builder = new AudioRecord.Builder();
         if (Build.VERSION.SDK_INT >= AndroidVersions.API_31_ANDROID_12) {
             // On older APIs, Workarounds.fillAppInfo() must be called beforehand
-            builder.setContext(applicationContext != null ? applicationContext : FakeContext.get());
+            builder.setContext(applicationContext != null ? applicationContext : RuntimeContext.get());
         }
         builder.setAudioSource(audioSource);
         builder.setAudioFormat(AudioConfig.createAudioFormat());
@@ -111,7 +115,7 @@ public class AudioDirectCapture implements AudioCapture {
             // - <https://github.com/Genymobile/scrcpy/issues/3805>
             // - <https://github.com/Genymobile/scrcpy/pull/3862>
             recorder = Workarounds.createAudioRecord(audioSource, SAMPLE_RATE, CHANNEL_CONFIG, CHANNELS, CHANNEL_MASK, ENCODING,
-                    applicationContext != null ? applicationContext : FakeContext.get());
+                    applicationContext != null ? applicationContext : RuntimeContext.get());
         }
         recorder.startRecording();
         if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {

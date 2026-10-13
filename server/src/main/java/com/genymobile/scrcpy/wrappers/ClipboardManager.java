@@ -1,25 +1,21 @@
 package com.genymobile.scrcpy.wrappers;
 
-import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.RuntimeContext;
 
 import android.content.ClipData;
 import android.content.Context;
 
 public final class ClipboardManager {
     private final android.content.ClipboardManager manager;
-    private static volatile Context applicationContext;
 
     // APK services must register clipboard listeners with their actual package
     // and UID. FakeContext is reserved for the shell entry point.
     public static void setApplicationContext(Context context) {
-        applicationContext = context.getApplicationContext();
+        RuntimeContext.initialize(context);
     }
 
     static ClipboardManager create() {
-        Context context = applicationContext;
-        if (context == null) {
-            context = FakeContext.get();
-        }
+        Context context = RuntimeContext.get();
         android.content.ClipboardManager manager = (android.content.ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
         if (manager == null) {
             // Some devices have no clipboard manager

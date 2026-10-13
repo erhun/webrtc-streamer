@@ -1,6 +1,6 @@
 package com.genymobile.scrcpy.wrappers;
 
-import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.RuntimeContext;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
@@ -102,7 +102,7 @@ public final class ServiceManager {
         if (cameraManager == null) {
             try {
                 Constructor<CameraManager> ctor = CameraManager.class.getDeclaredConstructor(Context.class);
-                cameraManager = ctor.newInstance(FakeContext.get());
+                cameraManager = ctor.newInstance(RuntimeContext.get());
             } catch (Exception e) {
                 throw new AssertionError(e);
             }

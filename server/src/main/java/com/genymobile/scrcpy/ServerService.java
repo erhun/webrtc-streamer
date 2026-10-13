@@ -1,7 +1,5 @@
 package com.genymobile.scrcpy;
 
-import com.genymobile.scrcpy.wrappers.ClipboardManager;
-
 import android.app.Service;
 import android.content.Intent;
 import android.os.Handler;
@@ -15,7 +13,7 @@ public class ServerService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        ClipboardManager.setApplicationContext(this);
+        RuntimeContext.initialize(this);
     }
 
     @Override

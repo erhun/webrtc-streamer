@@ -1,7 +1,7 @@
 package com.genymobile.scrcpy.device;
 
 import com.genymobile.scrcpy.AndroidVersions;
-import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.RuntimeContext;
 import com.genymobile.scrcpy.display.DisplayInfo;
 import com.genymobile.scrcpy.model.DeviceApp;
 import com.genymobile.scrcpy.util.Ln;
@@ -230,7 +230,7 @@ public final class Device {
 
     public static List<DeviceApp> listApps() {
         List<DeviceApp> apps = new ArrayList<>();
-        PackageManager pm = FakeContext.get().getPackageManager();
+        PackageManager pm = RuntimeContext.get().getPackageManager();
         for (ApplicationInfo appInfo : getLaunchableApps(pm)) {
             apps.add(toApp(pm, appInfo));
         }
@@ -267,7 +267,7 @@ public final class Device {
 
     @SuppressLint("QueryPermissionsNeeded")
     public static DeviceApp findByPackageName(String packageName) {
-        PackageManager pm = FakeContext.get().getPackageManager();
+        PackageManager pm = RuntimeContext.get().getPackageManager();
         // No need to filter by "launchable" apps, an error will be reported on start if the app is not launchable
         for (ApplicationInfo appInfo : pm.getInstalledApplications(PackageManager.GET_META_DATA)) {
             if (packageName.equals(appInfo.packageName)) {
@@ -283,7 +283,7 @@ public final class Device {
         List<DeviceApp> result = new ArrayList<>();
         searchName = searchName.toLowerCase(Locale.getDefault());
 
-        PackageManager pm = FakeContext.get().getPackageManager();
+        PackageManager pm = RuntimeContext.get().getPackageManager();
         for (ApplicationInfo appInfo : getLaunchableApps(pm)) {
             String name = pm.getApplicationLabel(appInfo).toString();
             if (name.toLowerCase(Locale.getDefault()).startsWith(searchName)) {
@@ -296,7 +296,7 @@ public final class Device {
     }
 
     public static void startApp(String packageName, int displayId, boolean forceStop) {
-        PackageManager pm = FakeContext.get().getPackageManager();
+        PackageManager pm = RuntimeContext.get().getPackageManager();
 
         Intent launchIntent = getLaunchIntent(pm, packageName);
         if (launchIntent == null) {

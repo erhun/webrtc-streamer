@@ -1,7 +1,7 @@
 package com.genymobile.scrcpy.wrappers;
 
 import com.genymobile.scrcpy.AndroidVersions;
-import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.RuntimeContext;
 import com.genymobile.scrcpy.display.DisplayInfo;
 import com.genymobile.scrcpy.model.Size;
 import com.genymobile.scrcpy.util.Command;
@@ -174,11 +174,7 @@ public final class DisplayManager {
     }
 
     public VirtualDisplay createNewVirtualDisplay(String name, int width, int height, int dpi, Surface surface, int flags) throws Exception {
-        Context realContext = com.genymobile.scrcpy.Server.getApplicationContext();
-        if (realContext == null) {
-            Ln.w("No real Context available, falling back to FakeContext");
-            realContext = FakeContext.get();
-        }
+        Context realContext = RuntimeContext.get();
         Constructor<android.hardware.display.DisplayManager> ctor = android.hardware.display.DisplayManager.class.getDeclaredConstructor(
                 Context.class);
         ctor.setAccessible(true);
@@ -222,7 +218,7 @@ public final class DisplayManager {
             try {
                 manager.getClass()
                         .getMethod("registerDisplayListener", displayListenerClass, Handler.class, long.class, String.class)
-                        .invoke(manager, displayListenerProxy, handler, EVENT_FLAG_DISPLAY_CHANGED, FakeContext.PACKAGE_NAME);
+                        .invoke(manager, displayListenerProxy, handler, EVENT_FLAG_DISPLAY_CHANGED, RuntimeContext.get().getOpPackageName());
             } catch (NoSuchMethodException e) {
                 try {
                     manager.getClass()

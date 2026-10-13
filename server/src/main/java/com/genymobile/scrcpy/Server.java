@@ -56,10 +56,8 @@ public final class Server {
 
     public static final String SERVER_PATH;
 
-    private static volatile Context applicationContext;
-
     public static Context getApplicationContext() {
-        return applicationContext;
+        return RuntimeContext.getApplicationContext();
     }
 
     static {
@@ -537,7 +535,7 @@ public final class Server {
     private static Session activeServiceSession;
     public static synchronized Session run(Context context, String[] args, Runnable finished) {
         if (activeServiceSession != null) { return null; }
-        applicationContext = context.getApplicationContext();
+        RuntimeContext.initialize(context);
         Session session = new Session();
         activeServiceSession = session;
         new Thread(() -> {
@@ -547,6 +545,8 @@ public final class Server {
                 Options options = Options.parse(args);
                 Ln.disableSystemStreams();
                 Ln.initLogLevel(options.getLogLevel());
+                Ln.i("Server identity: package=" + RuntimeContext.get().getPackageName() + " uid=" + android.os.Process.myUid()
+                        + " mode=application");
                 if (session.getState() != Session.State.STOPPING) { scrcpy(context, options, session); }
             } catch (Exception e) { Ln.e("Server error", e); }
             finally {
@@ -582,6 +582,9 @@ public final class Server {
             }
         });
 
+        if (!RuntimeContext.isShellRuntime()) {
+            throw new IllegalStateException("System applications must start ServerService, not the shell main entry point");
+        }
         dropRootPrivileges();
 
         prepareMainLooper();

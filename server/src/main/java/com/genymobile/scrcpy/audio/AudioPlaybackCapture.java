@@ -1,7 +1,7 @@
 package com.genymobile.scrcpy.audio;
 
 import com.genymobile.scrcpy.AndroidVersions;
-import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.RuntimeContext;
 import com.genymobile.scrcpy.util.Ln;
 
 import android.annotation.SuppressLint;
@@ -37,12 +37,16 @@ public final class AudioPlaybackCapture implements AudioCapture {
     }
 
     public AudioPlaybackCapture(Context context) {
-        applicationContext = context;
+        if (context != null) {
+            RuntimeContext.initialize(context);
+        }
+        RuntimeContext.get(); // Reject an application UID without a real Context before requesting MediaProjection.
+        applicationContext = RuntimeContext.getApplicationContext();
     }
 
     @SuppressLint({"PrivateApi", "DiscouragedPrivateApi"})
     private MediaProjection createMediaProjection() throws AudioCaptureException {
-        Context context = applicationContext != null ? applicationContext : FakeContext.get();
+        Context context = applicationContext != null ? applicationContext : RuntimeContext.get();
         try {
             Class<?> smClass = Class.forName("android.os.ServiceManager");
             Method getService = smClass.getDeclaredMethod("getService", String.class);
@@ -105,7 +109,7 @@ public final class AudioPlaybackCapture implements AudioCapture {
                 .setAudioPlaybackCaptureConfig(playbackConfig)
                 .setBufferSizeInBytes(bufferSize);
         if (Build.VERSION.SDK_INT >= AndroidVersions.API_31_ANDROID_12) {
-            builder.setContext(applicationContext != null ? applicationContext : FakeContext.get());
+            builder.setContext(applicationContext != null ? applicationContext : RuntimeContext.get());
         }
         return builder.build();
     }

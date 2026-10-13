@@ -14,6 +14,11 @@
 - APK 录音使用真实 Context，不运行 shell 前台录音兼容清理，也不覆盖真实 ActivityThread。
   Android 11 的 UID 2000 shell 入口才启用 HeapDumpActivity 兼容逻辑，清理包名固定为 `com.android.shell`。
   `forceStopPackage()` 在 debug 级别记录目标、PID 和调用栈。
+- 系统 APK 必须由 `ServerService` 启动，使用真实应用 UID、包名和 Context，不调用 `setuid(2000)`。
+  `RuntimeContext` 在服务创建时初始化，输入、剪贴板、相机、显示、设置、Activity 和音频统一使用它。
+  缺少真实 Context 的系统/普通应用 UID 会明确报错，不回退到 shell；`FakeContext` 仅供旧 app_process 入口使用。
+  启动日志 `Server identity: package=... uid=... mode=application` 可核对实际身份。
+  Settings/provider API 的 userId 来自 UID 的 Android 用户部分，不把 UID 1000/2000 当作 userId。
 
 ## 查看每一阶段
 
@@ -61,8 +66,11 @@ python3 server/tools/collect_frame_pipeline.py \
 
 ```bash
 python3 tests/run_video_adaptation.py
+python3 tests/run_runtime_context.py
 cd p4/web && npm run build
 ```
 
 Java 检查覆盖分数帧率、重复时间戳、帧率变化、稀疏反馈恢复、零预算、peer 预算生命周期与 APK/shell 录音策略。
+身份检查使用最小 Android 绑定运行真实 `RuntimeContext`，覆盖系统/普通应用缺失 Context、真实系统应用、非法 Context、旧 shell 和多用户。
+这不替代设备上的 Binder 权限、平台签名或 SELinux 验证。
 H5 counter 测试覆盖正常帧率、零帧停顿、SSRC 更换、计数回退和缺失字段。

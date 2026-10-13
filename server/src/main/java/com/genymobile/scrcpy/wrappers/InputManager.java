@@ -1,7 +1,7 @@
 package com.genymobile.scrcpy.wrappers;
 
 import com.genymobile.scrcpy.AndroidVersions;
-import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.RuntimeContext;
 import com.genymobile.scrcpy.util.Ln;
 
 import android.annotation.SuppressLint;
@@ -29,8 +29,8 @@ public final class InputManager {
     private static Method removeUniqueIdAssociationByPortMethod;
 
     static InputManager create() {
-        android.hardware.input.InputManager manager = (android.hardware.input.InputManager) FakeContext.get()
-                .getSystemService(FakeContext.INPUT_SERVICE);
+        android.hardware.input.InputManager manager = (android.hardware.input.InputManager) RuntimeContext.get()
+                .getSystemService(android.content.Context.INPUT_SERVICE);
         return new InputManager(manager);
     }
 

@@ -1,7 +1,7 @@
 package com.genymobile.scrcpy.wrappers;
 
 import com.genymobile.scrcpy.AndroidVersions;
-import com.genymobile.scrcpy.FakeContext;
+import com.genymobile.scrcpy.RuntimeContext;
 import com.genymobile.scrcpy.util.Ln;
 
 import android.annotation.SuppressLint;
@@ -72,10 +72,10 @@ public final class ActivityManager {
             Object[] args;
             if (getContentProviderExternalMethodNewVersion) {
                 // new version
-                args = new Object[]{name, FakeContext.ROOT_UID, token, null};
+                args = new Object[]{name, RuntimeContext.getUserId(), token, null};
             } else {
                 // old version
-                args = new Object[]{name, FakeContext.ROOT_UID, token};
+                args = new Object[]{name, RuntimeContext.getUserId(), token};
             }
             // ContentProviderHolder providerHolder = getContentProviderExternal(...);
             Object providerHolder = method.invoke(manager, args);
@@ -132,7 +132,7 @@ public final class ActivityManager {
             return (int) method.invoke(
                     /* this */ manager,
                     /* caller */ null,
-                    /* callingPackage */ FakeContext.PACKAGE_NAME,
+                    /* callingPackage */ RuntimeContext.get().getOpPackageName(),
                     /* intent */ intent,
                     /* resolvedType */ null,
                     /* resultTo */ null,

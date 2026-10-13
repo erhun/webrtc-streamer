@@ -19,10 +19,19 @@ public final class FakeContext extends ContextWrapper {
     public static final String PACKAGE_NAME = "com.android.shell";
     public static final int ROOT_UID = 0; // Like android.os.Process.ROOT_UID, but before API 29
 
-    private static final FakeContext INSTANCE = new FakeContext();
+    private static final class Holder {
+        private static final FakeContext INSTANCE = new FakeContext();
+
+        private Holder() {
+            // Not instantiable.
+        }
+    }
 
     public static FakeContext get() {
-        return INSTANCE;
+        if (!RuntimeContext.isShellRuntime()) {
+            throw new IllegalStateException("FakeContext is only available to the legacy shell entry point");
+        }
+        return Holder.INSTANCE;
     }
 
     private final ContentResolver contentResolver = new ContentResolver(this) {

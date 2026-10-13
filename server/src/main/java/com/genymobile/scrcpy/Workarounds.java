@@ -35,7 +35,7 @@ public final class Workarounds {
             Object existing = ACTIVITY_THREAD_CLASS.getMethod("currentActivityThread").invoke(null);
             SHELL_RUNTIME = existing == null;
             if (existing != null) {
-                // FakeContext may be referenced by legacy wrappers in APK mode. Preserve the real ActivityThread.
+                // Preserve the real ActivityThread when only the AudioRecord reflection fallback is needed.
                 ACTIVITY_THREAD = existing;
             } else {
                 Constructor<?> activityThreadConstructor = ACTIVITY_THREAD_CLASS.getDeclaredConstructor();
@@ -62,7 +62,7 @@ public final class Workarounds {
     }
 
     public static void apply() {
-        if (!SHELL_RUNTIME) {
+        if (!SHELL_RUNTIME || !RuntimeContext.isShellRuntime()) {
             return;
         }
         if (Build.VERSION.SDK_INT >= AndroidVersions.API_31_ANDROID_12) {
@@ -159,7 +159,7 @@ public final class Workarounds {
     @SuppressLint("WrongConstant,MissingPermission")
     public static AudioRecord createAudioRecord(int source, int sampleRate, int channelConfig, int channels,
             int channelMask, int encoding) throws AudioCaptureException {
-        return createAudioRecord(source, sampleRate, channelConfig, channels, channelMask, encoding, FakeContext.get());
+        return createAudioRecord(source, sampleRate, channelConfig, channels, channelMask, encoding, RuntimeContext.get());
     }
 
     public static AudioRecord createAudioRecord(int source, int sampleRate, int channelConfig, int channels,
