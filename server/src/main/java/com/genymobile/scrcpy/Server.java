@@ -122,6 +122,8 @@ public final class Server {
         // Disable capture and track creation together; muting playback is insufficient.
         //boolean audio = options.getAudio() && options.getSignalPort() == 0;
         boolean audio = options.getAudio();
+        Ln.i("Audio configuration: enabled=" + audio + " source=" + options.getAudioSource()
+                + " scheme=" + options.getAudioScheme().getName());
         boolean sendDummyByte = options.getSendDummyByte();
 
         if (context == null) {

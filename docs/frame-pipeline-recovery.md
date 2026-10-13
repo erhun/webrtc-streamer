@@ -74,3 +74,26 @@ Java 检查覆盖分数帧率、重复时间戳、帧率变化、稀疏反馈恢
 身份检查使用最小 Android 绑定运行真实 `RuntimeContext`，覆盖系统/普通应用缺失 Context、真实系统应用、非法 Context、旧 shell 和多用户。
 这不替代设备上的 Binder 权限、平台签名或 SELinux 验证。
 H5 counter 测试覆盖正常帧率、零帧停顿、SSRC 更换、计数回退和缺失字段。
+
+## 音频无声排查
+
+H5 默认静音播放，先点击“开启声音”，确认视频元素 `muted=false`、`paused=false` 并有 live audio track。
+服务端默认 `audio=true audio_source=output audio_scheme=pcm`；output 是 REMOTE_SUBMIX，playback 才使用 MediaProjection。
+不能把 playback 投影类型 2 直接认作错误：它是 TYPE_PRESENTATION，AOSP 实现允许此类型投影音频。
+
+`Audio configuration` 记录开关、源和 scheme；`AudioDirectCapture starting/started` 或 `AudioPlaybackCapture starting/started`
+记录实际包名、UID、录音 session 和录音状态。playback 未进入 RECORDSTATE_RECORDING 时会明确报错并清理部分初始化的资源。
+这些状态只说明录音已启动，不能证明 PCM 有声。
+
+播放连续有声素材，保存完整启动日志及至少 15 秒运行日志（无需清空设备日志）：
+
+```bash
+adb -s 127.0.0.1:46387 logcat -v threadtime > audio-log.txt
+```
+
+开始记录后用当前系统应用启动方式重启服务，连接 H5、点击开启声音并播放素材，最后 Ctrl+C 停止本机日志采集。
+关注 `AudioRecord`、`AudioPolicy`、`AudioFlinger`、`AppOps`、`Audio capture error`、`BroadcastAudioSink` 和 `pushPcm`。
+DEBUG 日志中 `pushPcm` 的 `avgAmplitude` 是周期抽样，不是每包采样；启动时一次为零不能证明全程无声。
+持续有声时多次为零，应继续检查采集策略、路由和设备源音量；持续非零但接收音频 bytesReceived 不增长，应检查音轨/SDP/发送链路。
+接收 bytesReceived 和 totalAudioEnergy 持续增长却无声，继续检查浏览器静音、播放拒绝与输出设备。
+Opus 路径没有此 PCM 抽样，不能用缺少 pushPcm 日志推断采集失败。

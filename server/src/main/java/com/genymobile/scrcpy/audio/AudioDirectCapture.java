@@ -108,6 +108,9 @@ public class AudioDirectCapture implements AudioCapture {
     }
 
     private void startRecording() throws AudioCaptureException {
+        Context context = applicationContext != null ? applicationContext : RuntimeContext.get();
+        Ln.i("AudioDirectCapture starting: source=" + audioSource + " package=" + context.getOpPackageName()
+                + " uid=" + android.os.Process.myUid());
         try {
             recorder = createAudioRecord(audioSource);
         } catch (NullPointerException e) {
@@ -125,6 +128,8 @@ public class AudioDirectCapture implements AudioCapture {
             throw new AudioCaptureException();
         }
         reader = new AudioRecordReader(recorder);
+        Ln.i("AudioDirectCapture started: session=" + recorder.getAudioSessionId() + " sampleRate=" + recorder.getSampleRate()
+                + " channels=" + recorder.getChannelCount() + " state=" + recorder.getRecordingState());
     }
 
     @Override

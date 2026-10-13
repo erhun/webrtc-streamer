@@ -26,6 +26,8 @@ public final class AudioPlaybackCapture implements AudioCapture {
     private static final int CHANNEL_CONFIG = AudioConfig.CHANNEL_CONFIG;
     private static final int CHANNELS = AudioConfig.CHANNELS;
     private static final int ENCODING = AudioConfig.ENCODING;
+    // Hidden MediaProjectionManager.TYPE_PRESENTATION, retained for the existing audio-only path.
+    private static final int TYPE_PRESENTATION = 2;
 
     private AudioRecord recorder;
     private AudioRecordReader reader;
@@ -62,11 +64,11 @@ public final class AudioPlaybackCapture implements AudioCapture {
 
             // createProjection(int uid, String packageName, int type, boolean isSecure)
             // Returns IMediaProjection (not IBinder)
-            // type 2 = TYPE_SCREEN_RECORDING (covers audio playback capture)
+            // TYPE_PRESENTATION is the existing audio-only projection type; it is not TYPE_SCREEN_RECORDING.
             Method createProjection = iManager.getClass().getMethod("createProjection",
                     int.class, String.class, int.class, boolean.class);
             Object iProjection = createProjection.invoke(iManager,
-                    android.os.Process.myUid(), context.getPackageName(), 2, false);
+                    android.os.Process.myUid(), context.getPackageName(), TYPE_PRESENTATION, false);
             if (iProjection == null) {
                 Ln.e("createProjection() returned null");
                 throw new AudioCaptureException();
@@ -124,23 +126,40 @@ public final class AudioPlaybackCapture implements AudioCapture {
 
     @Override
     public void start() throws AudioCaptureException {
-        mediaProjection = createMediaProjection();
-        Ln.d("MediaProjection created: " + mediaProjection);
-        recorder = createAudioRecord(mediaProjection);
-        recorder.startRecording();
-        reader = new AudioRecordReader(recorder);
-        Ln.d("AudioPlaybackCapture started: " + SAMPLE_RATE + "Hz, " + CHANNELS + "ch");
+        Context context = applicationContext != null ? applicationContext : RuntimeContext.get();
+        Ln.i("AudioPlaybackCapture starting: package=" + context.getOpPackageName() + " uid=" + android.os.Process.myUid()
+                + " projectionType=" + TYPE_PRESENTATION);
+        try {
+            mediaProjection = createMediaProjection();
+            recorder = createAudioRecord(mediaProjection);
+            recorder.startRecording();
+            if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+                Ln.e("AudioPlaybackCapture did not enter recording state");
+                throw new AudioCaptureException();
+            }
+            reader = new AudioRecordReader(recorder);
+            Ln.i("AudioPlaybackCapture started: session=" + recorder.getAudioSessionId() + " sampleRate=" + recorder.getSampleRate()
+                    + " channels=" + recorder.getChannelCount() + " state=" + recorder.getRecordingState());
+        } catch (AudioCaptureException | RuntimeException e) {
+            stop();
+            throw e;
+        }
     }
 
     @Override
     public void stop() {
-        if (recorder != null) {
-            recorder.release();
-            recorder = null;
-        }
-        if (mediaProjection != null) {
-            mediaProjection.stop();
-            mediaProjection = null;
+        AudioRecord record = recorder;
+        recorder = null;
+        MediaProjection projection = mediaProjection;
+        mediaProjection = null;
+        try {
+            if (record != null) {
+                record.release();
+            }
+        } finally {
+            if (projection != null) {
+                projection.stop();
+            }
         }
     }
 
