@@ -23,6 +23,9 @@ public final class SignalServer implements AutoCloseable {
         void onOffer(String roomId, String clientId, String sdp);
         void onIceCandidate(String roomId, String clientId, String mid, int index, String sdp);
         void onRoomEmpty(String roomId);
+        default void onServerStartFailed(Exception error) {
+            // Optional for listeners that do not own a streaming session.
+        }
     }
 
     private final WebSocketServer server;
@@ -34,6 +37,7 @@ public final class SignalServer implements AutoCloseable {
     private final Map<WebSocket, ClientSession> sessions = new ConcurrentHashMap<>();
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
     private volatile boolean stopped;
+    private volatile boolean listening;
 
     public SignalServer(int port, String token, int defaultMaxPeers, Listener listener) {
         this(port, token, defaultMaxPeers, listener, null);
@@ -80,10 +84,16 @@ public final class SignalServer implements AutoCloseable {
             @Override
             public void onError(WebSocket conn, Exception ex) {
                 Ln.e("Signal error", ex);
+                if (conn == null && !listening && !stopped) {
+                    listener.onServerStartFailed(ex);
+                }
             }
 
             @Override
-            public void onStart() { /* No startup messages contain credentials. */ }
+            public void onStart() {
+                listening = true;
+                Ln.i("Signal server listening on port " + port);
+            }
         };
         server.setMaxPendingConnections(64);
     }

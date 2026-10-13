@@ -67,6 +67,7 @@ python3 server/tools/collect_frame_pipeline.py \
 ```bash
 python3 tests/run_video_adaptation.py
 python3 tests/run_runtime_context.py
+python3 tests/run_foreground_service.py
 cd p4/web && npm run build
 ```
 
@@ -97,3 +98,21 @@ DEBUG 日志中 `pushPcm` 的 `avgAmplitude` 是周期抽样，不是每包采�
 持续有声时多次为零，应继续检查采集策略、路由和设备源音量；持续非零但接收音频 bytesReceived 不增长，应检查音轨/SDP/发送链路。
 接收 bytesReceived 和 totalAudioEnergy 持续增长却无声，继续检查浏览器静音、播放拒绝与输出设备。
 Opus 路径没有此 PCM 抽样，不能用缺少 pushPcm 日志推断采集失败。
+
+### 系统应用的 MediaProjection 前台服务
+
+2026-10-13 实时日志在 17:23:43 和 17:24:36 明确记录：`AudioPlaybackCapture.createMediaProjection()`
+调用 MediaProjection 构造器时，系统抛出需要 `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` 的 SecurityException，随后录音线程退出。
+声明 Manifest 的服务类型、使用系统 UID 1000，不等于已进入前台服务状态；此次部署未获得平台前台状态检查豁免。
+
+`ServerService` 现在先创建低重要性通知渠道和持续通知，调用 `startForeground()`，然后才启动 `Server.run()`。
+Android 10+ 显式传入 mediaProjection 类型，低版本保留兼容调用；Manifest 增加 FOREGROUND_SERVICE 和 FOREGROUND_SERVICE_MEDIA_PROJECTION。
+前台启动被拒绝时不启动采集，session 结束、启动失败和服务销毁时移除通知。
+该改动保留真实应用包名和 UID，没有切换 shell 身份，也没有通过假 ActivityThread 绕过平台校验。
+模拟平台边界测试覆盖 API 21/26/29/30/36 调用分支、启动顺序、通知、重复启动、拒绝和清理；不代表这些 Android 版本均已完成设备验证。
+普通 APK 的投影授权及 Android 新版本启动限制仍由平台执行，本项目依赖部署时真实获得的系统捕获权限。
+
+同一日志在 17:23:43 还记录 `BindException: Address already in use`。
+信令服务启动监听失败现在会通知 session 停止并清理采集，避免没有可用信令入口的会话继续占用编码器。
+运行期间单个客户端错误、监听成功后的错误和关闭后的迟到错误不会被误判为启动失败。
+部署时必须确认实际连接的是本次启动的实例；`Signal server listening on port ...` 表示监听完成，不包含凭证。

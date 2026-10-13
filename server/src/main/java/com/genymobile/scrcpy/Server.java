@@ -373,6 +373,12 @@ public final class Server {
         SignalServer signalServer = new SignalServer(options.getSignalPort(), options.getSignalToken(), maxPeers,
                 new SignalServer.Listener() {
             @Override
+            public void onServerStartFailed(Exception error) {
+                Ln.e("Signal listener startup failed; stopping streaming session", error);
+                session.stop();
+            }
+
+            @Override
             public void onClientJoined(String roomId, String clientId) {
                 Ln.i("onClientJoined called: roomId=" + roomId + " clientId=" + clientId);
                 NativeEncoderBridge bridge;
