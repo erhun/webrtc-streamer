@@ -153,6 +153,30 @@ adb push libscrcpy_native.so /system/lib64/libscrcpy_native.so
 adb reboot   # 重启让系统应用生效
 ```
 
+已有平台签名 APK 和对应 SO 时，推荐使用带校验的部署脚本替代手动复制：
+
+```bash
+server/tools/deploy_system_app.sh \
+    --serial "$SERIAL" \
+    --apk "$TMP/apk/scrcpy-platform.apk" \
+    --native "$TMP/native/libscrcpy_native.so" \
+    --mode cloud
+```
+
+默认 `--strategy system` 保留系统底包部署：原子替换 APK/SO、恢复文件权限和 SELinux 标签、重启、等待新启动完成，
+再验证实际生效的 APK 哈希、UID 1000、SYSTEM 和 PRIVILEGED 标记。云机需预先具备可写系统分区和 root adb 管理连接；
+模拟器使用 `--mode emulator`，脚本执行 `adb root`、等待连接后再 remount。管理连接的 root 权限不会改变 APK 的系统 UID。
+
+后续调试可加 `--strategy update`，通过 `adb install -r` 更新已识别的系统特权应用，不重启云机。
+此模式要求同包名、同平台签名，以及 APK 内打包与 `--native` 完全一致的 arm64 JNI 库；它不改系统底包和全局 SO。
+更新 APK 可以位于 `/data/app`，仍属于更新过的系统应用；不要因为路径在 data 就卸载整个包。
+正式系统部署时，如果已有 `/data/app` 更新包，脚本先把它更新为同一份 APK，避免它覆盖新系统底包。
+安装失败、校验失败和启动超时都会退出，不会静默报告成功，不使用 `pkill -f` 或删除应用数据。
+脚本只部署，不自动启动串流；启动参数继续由下节的原启动命令管理。
+
+校验脚本逻辑：`bash -n server/tools/deploy_system_app.sh` 和 `python3 tests/deploy_system_app_test.py`。
+模拟测试不替代云机上的包签名、权限及媒体采集验证。
+
 ### 6.5 启动 + 验证
 
 ```bash

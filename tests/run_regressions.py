@@ -14,6 +14,7 @@ def run(*args):
     subprocess.run(list(args), check=True)
 run(sys.executable, 'tests/run_video_adaptation.py')
 run(sys.executable, 'tests/run_foreground_service.py')
+run(sys.executable, 'tests/deploy_system_app_test.py')
 with tempfile.TemporaryDirectory(prefix='streaming-tests-', dir=root / 'tests') as temp:
     logger = Path(temp) / 'Ln.java'
     logger.write_text('package com.genymobile.scrcpy.util; public final class Ln {'
