@@ -56,6 +56,12 @@ public final class Server {
 
     public static final String SERVER_PATH;
 
+    private static Context applicationContext;
+
+    public static Context getApplicationContext() {
+        return applicationContext;
+    }
+
     static {
         String[] classPaths = System.getProperty("java.class.path").split(File.pathSeparator);
         // By convention, scrcpy is always executed with the absolute path of scrcpy-server.jar as the first item in the classpath
@@ -148,7 +154,7 @@ public final class Server {
                     throw new ConfigurationException("signal_token must be empty or at least 32 characters");
                 }
                 bridge = new NativeEncoderBridge();
-                bridge.setClosedCallback(session::stop);
+                // 主 bridge 断开时不停止会话，服务端长驻等待新客户端连接
                 AudioScheme scheme = options.getAudioScheme();
                 Ln.i("WebRTC audio scheme: " + scheme.getName());
                 bridge.open(audio, scheme.ordinal(), options.getTurnUrl(), options.getTurnUser(), options.getTurnPassword());
@@ -335,6 +341,7 @@ public final class Server {
         int maxPeers = 10;
         Map<String, NativeEncoderBridge> clientBridges = new ConcurrentHashMap<>();
         AtomicReference<String> primaryClientId = new AtomicReference<>();
+        AtomicReference<NativeEncoderBridge> primaryBridgeRef = new AtomicReference<>(primaryBridge);
         AtomicReference<SignalServer> serverRef = new AtomicReference<>();
         boolean audio = options.getAudio();
         AudioScheme scheme = options.getAudioScheme();
@@ -354,30 +361,55 @@ public final class Server {
                 new SignalServer.Listener() {
             @Override
             public void onClientJoined(String roomId, String clientId) {
+                Ln.i("onClientJoined called: roomId=" + roomId + " clientId=" + clientId);
                 NativeEncoderBridge bridge;
                 if (primaryClientId.compareAndSet(null, clientId)) {
-                    bridge = primaryBridge;
+                    Ln.i("Client is primary, checking bridge state");
+                    // 尝试复用 primaryBridge，如果已关闭则创建新的
+                    NativeEncoderBridge oldBridge = primaryBridgeRef.get();
+                    if (oldBridge != null && !oldBridge.isClosed()) {
+                        bridge = oldBridge;
+                        Ln.i("Reusing primary bridge for client: " + clientId);
+                    } else {
+                        // 创建新的 primary bridge
+                        Ln.i("Creating new primary bridge for client: " + clientId);
+                        bridge = new NativeEncoderBridge();
+                        primaryBridgeRef.set(bridge);
+                        bridge.open(audio, scheme.ordinal(), turnUrl, turnUser, turnPassword);
+                        Ln.i("New primary bridge opened successfully");
+                    }
                 } else {
+                    Ln.i("Client is additional, creating new bridge: " + clientId);
                     bridge = new NativeEncoderBridge();
                     bridge.setClosedCallback(session::stop);
                     bridge.open(audio, scheme.ordinal(), turnUrl, turnUser, turnPassword);
-                    Ln.i("Created additional bridge for client: " + clientId);
+                    Ln.i("Additional bridge created for client: " + clientId);
                 }
                 clientBridges.put(clientId, bridge);
                 if (broadcastVideoSink != null) {
                     broadcastVideoSink.addBridge(bridge);
+                    Ln.i("Bridge added to video sink: " + clientId);
                 }
                 if (broadcastAudioSink != null) {
                     broadcastAudioSink.addBridge(bridge);
+                    Ln.i("Bridge added to audio sink: " + clientId);
                 }
                 if (bitrateAggregator != null) {
                     bitrateAggregator.addBridge(bridge);
                     bridge.setCallback(createAggregatorCallback(bridge, bitrateAggregator));
                 }
                 if (controlManager != null) {
-                    bridge.setDataCallback(data -> controlManager.handleControlData(clientId, data));
+                    Ln.i("Setting up control channel for client: " + clientId);
+                    bridge.setDataCallback(data -> {
+                        Ln.d("Received control data from client " + clientId + ": " + data.length + " bytes");
+                        controlManager.handleControlData(clientId, data);
+                    });
                     controlManager.registerForwarder(clientId, data -> { });
-                    controlManager.registerSender(clientId, message -> bridge.sendData(message.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                    controlManager.registerSender(clientId, message -> {
+                        Ln.d("Sending control data to client " + clientId + ": " + message.length() + " bytes");
+                        bridge.sendData(message.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    });
+                    Ln.i("Control channel setup complete for client: " + clientId);
                 }
                 SignalServer server = serverRef.get();
                 bridge.setSignalCallback(new NativeEncoderBridge.SignalCallback() {
@@ -416,11 +448,17 @@ public final class Server {
                     if (bridge != primaryBridge) {
                         bridge.close();
                         Ln.i("Closed additional bridge for client: " + clientId);
+                    } else {
+                        // Primary client disconnected: reset the native peer connection
+                        // so the next client gets a fresh connection instead of waiting
+                        // for the old one's 45-second recovery timeout.
+                        Ln.i("Primary client left, resetting native peer connection: " + clientId);
+                        bridge.resetPeer();
                     }
                 }
                 if (primaryClientId.compareAndSet(clientId, null)) {
-                    Ln.i("Primary client left, stopping session");
-                    session.stop();
+                    Ln.i("Primary client left, waiting for reconnection: " + clientId);
+                    // 不停止会话，服务端长驻等待新客户端连接
                 }
             }
 
@@ -442,8 +480,8 @@ public final class Server {
 
             @Override
             public void onRoomEmpty(String roomId) {
-                Ln.i("Room empty, stopping session: roomId=" + roomId);
-                session.stop();
+                Ln.i("Room empty, server staying alive for new connections: roomId=" + roomId);
+                // 房间清空也不停止会话，服务端长驻等待新客户端连接
             }
         }, portMapConfig);
         serverRef.set(signalServer);
@@ -486,6 +524,7 @@ public final class Server {
     private static Session activeServiceSession;
     public static synchronized Session run(Context context, String[] args, Runnable finished) {
         if (activeServiceSession != null) { return null; }
+        applicationContext = context.getApplicationContext();
         Session session = new Session();
         activeServiceSession = session;
         new Thread(() -> {

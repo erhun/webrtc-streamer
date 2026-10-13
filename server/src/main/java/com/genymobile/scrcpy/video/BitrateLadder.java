@@ -52,15 +52,17 @@ public final class BitrateLadder {
     // ==================== 可配置参数 ====================
     public static final class Config {
         /** 带宽低于当前档码率 * downscaleFactor 时触发降档 */
-        public double downscaleFactor = 0.8;
+        public double downscaleFactor = 0.78;
         /** 带宽高于下一档码率 * upscaleFactor 时触发升档 */
-        public double upscaleFactor = 1.1;
+        public double upscaleFactor = 1.12;
         /** 升档防抖：需稳定维持的毫秒数 */
-        public long upgradeStableMs = 5000L;
-        /** 常规降档防抖：需持续低于阈值的毫秒数 */
-        public long downgradeStableMs = 3000L;
+        public long upgradeStableMs = 6000L;
+        /** 常规降档防抖：需持续低于阈值的毫秒数（平衡防抖与响应速度） */
+        public long downgradeStableMs = 10000L;
         /** 严重降档（跨 ≥2 级）的最小冷却间隔 */
         public long severeDowngradeCooldownMs = 1000L;
+        /** 档位切换后的最小保持时间：防止短时间内连续切换 */
+        public long minHoldAfterChangeMs = 5000L;
 
         public Config() {}
 
@@ -71,6 +73,7 @@ public final class BitrateLadder {
             c.upgradeStableMs = upgradeStableMs;
             c.downgradeStableMs = downgradeStableMs;
             c.severeDowngradeCooldownMs = severeDowngradeCooldownMs;
+            c.minHoldAfterChangeMs = minHoldAfterChangeMs;
             return c;
         }
     }
@@ -166,6 +169,12 @@ public final class BitrateLadder {
             resetFeedback();
         }
         lastFeedbackMs = nowMs;
+
+        // 最小保持时间：档位切换后的一段时间内不允许再次切换（防止频繁震荡）
+        if (lastChangeMs != Long.MIN_VALUE && (nowMs - lastChangeMs < config.minHoldAfterChangeMs)) {
+            return false;
+        }
+
         int oldLevel = level;
         int newLevel = computeTargetLevel(bps);
 

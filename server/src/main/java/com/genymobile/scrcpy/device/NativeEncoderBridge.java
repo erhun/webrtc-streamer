@@ -84,6 +84,7 @@ public final class NativeEncoderBridge implements AutoCloseable {
         if (handle != 0) { nativeIce(handle, mid, index, sdp); }
     }
     public synchronized boolean sendData(byte[] data) { return handle != 0 && nativeSend(handle, data); }
+    public synchronized boolean isClosed() { return handle == 0; }
     @Override
     public synchronized void close() {
         callback = null; signalCallback = null; dataCallback = null; closedCallback = null;

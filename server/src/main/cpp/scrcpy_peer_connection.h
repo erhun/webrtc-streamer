@@ -45,6 +45,9 @@ public:
 
     bool SendData(const uint8_t* data, size_t len);
     void OnDataChannelOpened(webrtc::scoped_refptr<webrtc::DataChannelInterface> data_channel);
+    webrtc::DataChannelInterface::DataState GetDataChannelState() {
+        return data_channel_ ? data_channel_->state() : webrtc::DataChannelInterface::kClosed;
+    }
     void RequestLatencyStats();
     void OnDataMessage(const uint8_t* data, size_t len);
 

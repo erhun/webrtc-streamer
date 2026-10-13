@@ -107,52 +107,38 @@ public class ScreenCapture extends SurfaceCapture {
 
     @Override
     public void start(Surface surface) throws IOException {
-        if (display != null) {
-            SurfaceControl.destroyDisplay(display);
-            display = null;
-        }
+        // Always use device resolution for VirtualDisplay input so the display never needs
+        // to be recreated when the adaptive resolution tier changes. The GL filter handles
+        // downscaling from device resolution to the target video size.
+        Size inputSize = displayInfo.getSize();
+
+        AffineMatrix filterMatrix = transform != null ? transform : AffineMatrix.IDENTITY;
+        assert glRunner == null;
+        OpenGLFilter glFilter = new AffineOpenGLFilter(filterMatrix);
+        glRunner = new OpenGLRunner(glFilter);
+        surface = glRunner.start(inputSize, videoSize, surface);
+
         if (virtualDisplay != null) {
-            virtualDisplay.release();
-            virtualDisplay = null;
-        }
-
-        Size inputSize;
-        if (transform != null) {
-            // If there is a filter, it must receive the full display content
-            inputSize = displayInfo.getSize();
-            assert glRunner == null;
-            OpenGLFilter glFilter = new AffineOpenGLFilter(transform);
-            glRunner = new OpenGLRunner(glFilter);
-            surface = glRunner.start(inputSize, videoSize, surface);
+            virtualDisplay.setSurface(surface);
+            Ln.d("Display: reusing existing VirtualDisplay id=" + virtualDisplay.getDisplay().getDisplayId());
+        } else if (display != null) {
+            Size deviceSize = displayInfo.getSize();
+            int layerStack = displayInfo.getLayerStack();
+            setDisplaySurface(display, surface, deviceSize.toRect(), inputSize.toRect(), layerStack);
+            Ln.d("Display: reusing existing SurfaceControl display");
         } else {
-            // If there is no filter, the display must be rendered at target video size directly
-            inputSize = videoSize;
-        }
-
-        try {
-            virtualDisplay = ServiceManager.getDisplayManager()
-                    .createVirtualDisplay("scrcpy", inputSize.getWidth(), inputSize.getHeight(), displayId, surface);
-            Ln.d("Display: using DisplayManager API");
-        } catch (Exception displayManagerException) {
-            if (Build.BRAND.equalsIgnoreCase("oculus") && Build.MODEL.toLowerCase(Locale.ROOT).startsWith("quest")) {
-                // Workaround for buggy createVirtualDisplay on Quest
-                try {
-                    virtualDisplay = (VirtualDisplay) VirtualDisplay.class.getDeclaredConstructors()[0].newInstance(null, null, null, surface);
-                } catch (ReflectiveOperationException e) {
-                    Ln.e("Could not create VirtualDisplay", e);
-                }
-            } else {
-                try {
-                    display = createDisplay();
-
-                    Size deviceSize = displayInfo.getSize();
-                    int layerStack = displayInfo.getLayerStack();
-                    setDisplaySurface(display, surface, deviceSize.toRect(), inputSize.toRect(), layerStack);
-                    Ln.d("Display: using SurfaceControl API");
-                } catch (Exception surfaceControlException) {
+            try {
+                int dpi = displayInfo.getDpi();
+                int flags = android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR;
+                Ln.d("Attempting DisplayManager API with AUTO_MIRROR flag (dpi=" + dpi + ", size=" + inputSize + ")");
+                virtualDisplay = ServiceManager.getDisplayManager()
+                        .createNewVirtualDisplay("scrcpy", inputSize.getWidth(), inputSize.getHeight(), dpi, surface, flags);
+                Ln.d("Display: using DisplayManager API with AUTO_MIRROR flag");
+            } catch (Exception displayManagerException) {
+                Ln.e("DisplayManager API failed", displayManagerException);
+                if (!startWithSurfaceControl(surface, inputSize, 2)) {
                     Ln.e("Could not create display using DisplayManager", displayManagerException);
-                    Ln.e("Could not create display using SurfaceControl", surfaceControlException);
-                    throw new AssertionError("Could not create display");
+                    throw new AssertionError("Could not create display: DisplayManager failed and SurfaceControl retry exhausted");
                 }
             }
         }
@@ -161,12 +147,10 @@ public class ScreenCapture extends SurfaceCapture {
             int virtualDisplayId;
             PositionMapper positionMapper;
             if (virtualDisplay == null || displayId == 0) {
-                // Surface control or main display: send all events to the original display, relative to the device size
                 Size deviceSize = displayInfo.getSize();
                 positionMapper = PositionMapper.create(videoSize, transform, deviceSize);
                 virtualDisplayId = displayId;
             } else {
-                // The positions are relative to the virtual display, not the original display (so use inputSize, not deviceSize!)
                 positionMapper = PositionMapper.create(videoSize, transform, inputSize);
                 virtualDisplayId = virtualDisplay.getDisplay().getDisplayId();
             }
@@ -176,13 +160,14 @@ public class ScreenCapture extends SurfaceCapture {
 
     @Override
     public void stop() {
+        if (virtualDisplay != null) {
+            virtualDisplay.setSurface(null);
+            Ln.d("ScreenCapture.stop(): detached surface from VirtualDisplay id=" + virtualDisplay.getDisplay().getDisplayId());
+        }
         if (display != null) {
+            Ln.d("ScreenCapture.stop(): destroying SurfaceControl display token");
             SurfaceControl.destroyDisplay(display);
             display = null;
-        }
-        if (virtualDisplay != null) {
-            virtualDisplay.release();
-            virtualDisplay = null;
         }
         if (glRunner != null) {
             glRunner.stopAndRelease();
@@ -195,10 +180,12 @@ public class ScreenCapture extends SurfaceCapture {
         displayMonitor.stopAndRelease();
 
         if (display != null) {
+            Ln.d("ScreenCapture.release(): destroying SurfaceControl display token");
             SurfaceControl.destroyDisplay(display);
             display = null;
         }
         if (virtualDisplay != null) {
+            Ln.d("ScreenCapture.release(): releasing VirtualDisplay id=" + virtualDisplay.getDisplay().getDisplayId());
             virtualDisplay.release();
             virtualDisplay = null;
         }
@@ -232,5 +219,46 @@ public class ScreenCapture extends SurfaceCapture {
         } finally {
             SurfaceControl.closeTransaction();
         }
+    }
+
+    private boolean startWithSurfaceControl(Surface surface, Size inputSize, int maxRetries) {
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            if (attempt > 0) {
+                Ln.w("SurfaceControl retry attempt " + attempt + "/" + maxRetries);
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+
+            try {
+                DisplayInfo freshInfo = ServiceManager.getDisplayManager().getDisplayInfo(displayId);
+                if (freshInfo == null) {
+                    Ln.e("SurfaceControl: failed to refresh DisplayInfo for display " + displayId);
+                    continue;
+                }
+                displayInfo = freshInfo;
+
+                display = createDisplay();
+                Size deviceSize = displayInfo.getSize();
+                int layerStack = displayInfo.getLayerStack();
+                Ln.d("SurfaceControl: fresh layerStack=" + layerStack + " for display " + displayId);
+                setDisplaySurface(display, surface, deviceSize.toRect(), inputSize.toRect(), layerStack);
+                Ln.d("Display: using SurfaceControl API (fallback, attempt=" + attempt + ")");
+                return true;
+            } catch (Exception e) {
+                Ln.e("SurfaceControl attempt " + attempt + " failed", e);
+                if (display != null) {
+                    try {
+                        SurfaceControl.destroyDisplay(display);
+                    } catch (Exception ignored) {
+                    }
+                    display = null;
+                }
+            }
+        }
+        return false;
     }
 }

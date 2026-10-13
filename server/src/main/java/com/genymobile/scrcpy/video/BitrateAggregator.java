@@ -10,40 +10,63 @@ public final class BitrateAggregator {
     public interface Output {
         void onAggregatedBitrate(int bps, double fps);
         void onAggregatedKeyFrameRequest();
+        /** 发送队列延迟过高，请求快速降档（不等 BWE 反馈）。 */
+        default void onQueueDelayHigh(long nowMs) {}
     }
 
-    private final Map<NativeEncoderBridge, Integer> bitrates = new ConcurrentHashMap<>();
+    private static final class Sample {
+        final int bps;
+        final double fps;
+        Sample(int bps, double fps) {
+            this.bps = bps;
+            this.fps = fps;
+        }
+    }
+
+    private final Map<NativeEncoderBridge, Sample> samples = new ConcurrentHashMap<>();
     private final Output output;
-    private double latestFps;
 
     public BitrateAggregator(Output output) {
         this.output = output;
     }
 
     public synchronized void addBridge(NativeEncoderBridge bridge) {
-        bitrates.put(bridge, 0);
+        samples.put(bridge, new Sample(0, 0));
     }
 
     public synchronized void removeBridge(NativeEncoderBridge bridge) {
-        bitrates.remove(bridge);
+        samples.remove(bridge);
     }
 
     public synchronized void updateBitrate(NativeEncoderBridge source, int bps, double fps) {
-        bitrates.put(source, Math.max(0, bps));
-        latestFps = fps;
-        int min = Integer.MAX_VALUE;
-        for (int value : bitrates.values()) {
-            if (value > 0 && value < min) {
-                min = value;
+        if (bps <= 0) {
+            // 无有效反馈：移除该 bridge，避免用 0 或旧值污染聚合结果。
+            samples.remove(source);
+        } else {
+            samples.put(source, new Sample(bps, fps));
+        }
+
+        int minBps = Integer.MAX_VALUE;
+        double minFps = 0;
+        for (Sample s : samples.values()) {
+            if (s.bps > 0 && s.bps < minBps) {
+                minBps = s.bps;
+                minFps = s.fps;
             }
         }
-        if (min == Integer.MAX_VALUE) {
-            min = 0;
+        if (minBps == Integer.MAX_VALUE) {
+            minBps = 0;
+            minFps = 0;
         }
-        output.onAggregatedBitrate(min, latestFps);
+        output.onAggregatedBitrate(minBps, minFps);
     }
 
     public void requestKeyFrame() {
         output.onAggregatedKeyFrameRequest();
+    }
+
+    /** 由发送侧/编码器侧检测到队列延迟过高时调用。 */
+    public void notifyQueueDelayHigh(long nowMs) {
+        output.onQueueDelayHigh(nowMs);
     }
 }

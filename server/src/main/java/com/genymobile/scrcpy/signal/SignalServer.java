@@ -194,16 +194,20 @@ public final class SignalServer implements AutoCloseable {
     }
 
     private void handleJoin(WebSocket conn, ClientSession session, JSONObject msg) throws JSONException {
+        Ln.i("handleJoin called - processing join request");
         String token = msg.optString("token");
         if (!signalToken.isEmpty() && (token == null || !constantTimeEquals(signalToken, token))) {
+            Ln.w("handleJoin: invalid token");
             conn.close(1008, "LOGIN_TOKEN_INVALID");
             return;
         }
         String roomId = msg.optString("room", "default");
         if (roomId.isEmpty() || roomId.length() > 128 || !isValidRoomId(roomId)) {
+            Ln.w("handleJoin: invalid roomId: " + roomId);
             conn.close(1008, "INVALID_ROOM_ID");
             return;
         }
+        Ln.i("handleJoin: roomId=" + roomId);
         
         // 调试模式下允许客户端指定 clientId（用于会话恢复）
         String clientId = msg.optString("clientId");

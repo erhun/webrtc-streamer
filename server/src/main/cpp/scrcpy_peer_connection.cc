@@ -141,6 +141,9 @@ public:
     ~DataChannelObserver() override = default;
 
     void OnStateChange() override {
+        if (!lifetime_.expired()) {
+            SCP_LOGE("DataChannelObserver::OnStateChange: state=%d", (int)owner_->GetDataChannelState());
+        }
     }
 
     void OnMessage(const webrtc::DataBuffer& buffer) override {
@@ -349,11 +352,23 @@ bool ScrcpyPeerConnection::SendData(const uint8_t* data, size_t len) {
 }
 
 void ScrcpyPeerConnection::OnDataChannelOpened(webrtc::scoped_refptr<webrtc::DataChannelInterface> data_channel) {
-    if (data_channel_ != nullptr || data_channel->label() != "control") { data_channel->Close(); return; }
+    if (data_channel->label() != "control") { data_channel->Close(); return; }
+    if (data_channel_ != nullptr && data_channel_->state() == webrtc::DataChannelInterface::kOpen) {
+        SCP_LOGE("OnDataChannelOpened: rejecting duplicate control channel");
+        data_channel->Close();
+        return;
+    }
+    if (data_channel_ != nullptr) {
+        SCP_LOGE("OnDataChannelOpened: replacing closed control channel");
+        data_channel_->UnregisterObserver();
+        data_channel_->Close();
+        delete data_channel_observer_;
+        data_channel_observer_ = nullptr;
+    }
     data_channel_ = data_channel;
     data_channel_observer_ = new DataChannelObserver(this);
     data_channel_->RegisterObserver(data_channel_observer_);
-    SCP_LOGE("OnDataChannelOpened: label=%s", data_channel_->label().c_str());
+    SCP_LOGE("OnDataChannelOpened: label=%s state=%d", data_channel_->label().c_str(), (int)data_channel_->state());
 }
 
 void ScrcpyPeerConnection::RequestLatencyStats() {

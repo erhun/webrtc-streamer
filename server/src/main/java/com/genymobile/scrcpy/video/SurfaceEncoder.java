@@ -77,6 +77,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final BitrateLadder bitrateLadder = new BitrateLadder();
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
+    private int smoothedBitrate = -1;
+    private static final double SMOOTHING_ALPHA = 0.25; // EMA 系数：0.25 表示新值权重 25%，历史值权重 75%（平衡平滑与响应速度）
     private boolean pendingKeyFrame;
     private boolean pendingPeerRefresh;
     private final CaptureRefreshGate captureRefreshGate = new CaptureRefreshGate();
@@ -553,9 +555,15 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     public void onBitrate(int bps, double fps) {
         synchronized (feedbackLock) {
             pendingBitrate = Math.max(0, bps);
+            // 应用指数移动平均（EMA）平滑带宽波动
+            if (smoothedBitrate < 0) {
+                smoothedBitrate = pendingBitrate;
+            } else {
+                smoothedBitrate = (int) (SMOOTHING_ALPHA * pendingBitrate + (1 - SMOOTHING_ALPHA) * smoothedBitrate);
+            }
             // Observe every feedback event, even if codec reset coalesces multiple callbacks.
             // Otherwise a short budget dip/zero can disappear before applyFeedback sees it.
-            bitrateLadder.update(pendingBitrate, SystemClock.elapsedRealtime());
+            bitrateLadder.update(smoothedBitrate, SystemClock.elapsedRealtime());
         }
     }
 

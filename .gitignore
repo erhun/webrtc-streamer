@@ -15,3 +15,5 @@ server/native-*/
 __pycache__/
 
 tests/streaming-tests-*/
+/p4/start-server.sh
+/p4/deploy.sh

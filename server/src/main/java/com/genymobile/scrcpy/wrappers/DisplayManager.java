@@ -174,10 +174,15 @@ public final class DisplayManager {
     }
 
     public VirtualDisplay createNewVirtualDisplay(String name, int width, int height, int dpi, Surface surface, int flags) throws Exception {
+        Context realContext = com.genymobile.scrcpy.Server.getApplicationContext();
+        if (realContext == null) {
+            Ln.w("No real Context available, falling back to FakeContext");
+            realContext = FakeContext.get();
+        }
         Constructor<android.hardware.display.DisplayManager> ctor = android.hardware.display.DisplayManager.class.getDeclaredConstructor(
                 Context.class);
         ctor.setAccessible(true);
-        android.hardware.display.DisplayManager dm = ctor.newInstance(FakeContext.get());
+        android.hardware.display.DisplayManager dm = ctor.newInstance(realContext);
         return dm.createVirtualDisplay(name, width, height, dpi, surface, flags);
     }
 
