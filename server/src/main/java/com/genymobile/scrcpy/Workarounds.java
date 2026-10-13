@@ -27,24 +27,31 @@ public final class Workarounds {
 
     private static final Class<?> ACTIVITY_THREAD_CLASS;
     private static final Object ACTIVITY_THREAD;
+    private static final boolean SHELL_RUNTIME;
 
     static {
         try {
-            // ActivityThread activityThread = new ActivityThread();
             ACTIVITY_THREAD_CLASS = Class.forName("android.app.ActivityThread");
-            Constructor<?> activityThreadConstructor = ACTIVITY_THREAD_CLASS.getDeclaredConstructor();
-            activityThreadConstructor.setAccessible(true);
-            ACTIVITY_THREAD = activityThreadConstructor.newInstance();
+            Object existing = ACTIVITY_THREAD_CLASS.getMethod("currentActivityThread").invoke(null);
+            SHELL_RUNTIME = existing == null;
+            if (existing != null) {
+                // FakeContext may be referenced by legacy wrappers in APK mode. Preserve the real ActivityThread.
+                ACTIVITY_THREAD = existing;
+            } else {
+                Constructor<?> activityThreadConstructor = ACTIVITY_THREAD_CLASS.getDeclaredConstructor();
+                activityThreadConstructor.setAccessible(true);
+                ACTIVITY_THREAD = activityThreadConstructor.newInstance();
 
-            // ActivityThread.sCurrentActivityThread = activityThread;
-            Field sCurrentActivityThreadField = ACTIVITY_THREAD_CLASS.getDeclaredField("sCurrentActivityThread");
-            sCurrentActivityThreadField.setAccessible(true);
-            sCurrentActivityThreadField.set(null, ACTIVITY_THREAD);
+                // ActivityThread.sCurrentActivityThread = activityThread;
+                Field sCurrentActivityThreadField = ACTIVITY_THREAD_CLASS.getDeclaredField("sCurrentActivityThread");
+                sCurrentActivityThreadField.setAccessible(true);
+                sCurrentActivityThreadField.set(null, ACTIVITY_THREAD);
 
-            // activityThread.mSystemThread = true;
-            Field mSystemThreadField = ACTIVITY_THREAD_CLASS.getDeclaredField("mSystemThread");
-            mSystemThreadField.setAccessible(true);
-            mSystemThreadField.setBoolean(ACTIVITY_THREAD, true);
+                // activityThread.mSystemThread = true;
+                Field mSystemThreadField = ACTIVITY_THREAD_CLASS.getDeclaredField("mSystemThread");
+                mSystemThreadField.setAccessible(true);
+                mSystemThreadField.setBoolean(ACTIVITY_THREAD, true);
+            }
         } catch (Exception e) {
             throw new AssertionError(e);
         }
@@ -55,6 +62,9 @@ public final class Workarounds {
     }
 
     public static void apply() {
+        if (!SHELL_RUNTIME) {
+            return;
+        }
         if (Build.VERSION.SDK_INT >= AndroidVersions.API_31_ANDROID_12) {
             // On some Samsung devices, DisplayManagerGlobal.getDisplayInfoLocked() calls ActivityThread.currentActivityThread().getConfiguration(),
             // which requires a non-null ConfigurationController.
@@ -147,13 +157,13 @@ public final class Workarounds {
 
     @TargetApi(AndroidVersions.API_30_ANDROID_11)
     @SuppressLint("WrongConstant,MissingPermission")
-    public static AudioRecord createAudioRecord(int source, int sampleRate, int channelConfig, int channels, int channelMask, int encoding) throws
-            AudioCaptureException {
-        // Vivo (and maybe some other third-party ROMs) modified `AudioRecord`'s constructor, requiring `Context`s from real App environment.
-        //
-        // This method invokes the `AudioRecord(long nativeRecordInJavaObj)` constructor to create an empty `AudioRecord` instance, then uses
-        // reflections to initialize it like the normal constructor do (or the `AudioRecord.Builder.build()` method do).
-        // As a result, the modified code was not executed.
+    public static AudioRecord createAudioRecord(int source, int sampleRate, int channelConfig, int channels,
+            int channelMask, int encoding) throws AudioCaptureException {
+        return createAudioRecord(source, sampleRate, channelConfig, channels, channelMask, encoding, FakeContext.get());
+    }
+
+    public static AudioRecord createAudioRecord(int source, int sampleRate, int channelConfig, int channels,
+            int channelMask, int encoding, Context context) throws AudioCaptureException {
         try {
             // AudioRecord audioRecord = new AudioRecord(0L);
             Constructor<AudioRecord> audioRecordConstructor = AudioRecord.class.getDeclaredConstructor(long.class);
@@ -226,11 +236,11 @@ public final class Workarounds {
                         int.class, int.class, int.class, int[].class, String.class, long.class);
                 nativeSetupMethod.setAccessible(true);
                 initResult = (int) nativeSetupMethod.invoke(audioRecord, new WeakReference<AudioRecord>(audioRecord), attributes, sampleRateArray,
-                        channelMask, channelIndexMask, audioRecord.getAudioFormat(), bufferSizeInBytes, session, FakeContext.get().getOpPackageName(),
+                        channelMask, channelIndexMask, audioRecord.getAudioFormat(), bufferSizeInBytes, session, context.getOpPackageName(),
                         0L);
             } else {
                 // Assume `context` is never `null`
-                AttributionSource attributionSource = FakeContext.get().getAttributionSource();
+                AttributionSource attributionSource = context.getAttributionSource();
 
                 // Assume `attributionSource.getPackageName()` is never null
 

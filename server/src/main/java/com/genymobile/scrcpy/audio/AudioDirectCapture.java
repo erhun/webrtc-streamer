@@ -10,6 +10,7 @@ import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.Context;
 import android.media.AudioRecord;
 import android.media.MediaCodec;
 import android.os.Build;
@@ -26,21 +27,27 @@ public class AudioDirectCapture implements AudioCapture {
     private static final int ENCODING = AudioConfig.ENCODING;
 
     private final int audioSource;
+    private final Context applicationContext;
 
     private AudioRecord recorder;
     private AudioRecordReader reader;
 
     public AudioDirectCapture(AudioSource audioSource) {
+        this(audioSource, null);
+    }
+
+    public AudioDirectCapture(AudioSource audioSource, Context context) {
         this.audioSource = audioSource.getDirectAudioSource();
+        applicationContext = context;
     }
 
     @TargetApi(AndroidVersions.API_23_ANDROID_6_0)
     @SuppressLint({"WrongConstant", "MissingPermission"})
-    private static AudioRecord createAudioRecord(int audioSource) {
+    private AudioRecord createAudioRecord(int audioSource) {
         AudioRecord.Builder builder = new AudioRecord.Builder();
         if (Build.VERSION.SDK_INT >= AndroidVersions.API_31_ANDROID_12) {
             // On older APIs, Workarounds.fillAppInfo() must be called beforehand
-            builder.setContext(FakeContext.get());
+            builder.setContext(applicationContext != null ? applicationContext : FakeContext.get());
         }
         builder.setAudioSource(audioSource);
         builder.setAudioFormat(AudioConfig.createAudioFormat());
@@ -63,12 +70,13 @@ public class AudioDirectCapture implements AudioCapture {
         Intent intent = new Intent(Intent.ACTION_MAIN);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         intent.addCategory(Intent.CATEGORY_LAUNCHER);
-        intent.setComponent(new ComponentName(FakeContext.PACKAGE_NAME, "com.android.shell.HeapDumpActivity"));
+        intent.setComponent(new ComponentName(ShellAudioWorkaround.PACKAGE_NAME, "com.android.shell.HeapDumpActivity"));
         ServiceManager.getActivityManager().startActivity(intent);
     }
 
     private static void stopWorkaroundAndroid11() {
-        ServiceManager.getActivityManager().forceStopPackage(FakeContext.PACKAGE_NAME);
+        // Never derive this cleanup target from the server application's package identity.
+        ServiceManager.getActivityManager().forceStopPackage(ShellAudioWorkaround.PACKAGE_NAME);
     }
 
     private void tryStartRecording(int attempts, int delayMs) throws AudioCaptureException {
@@ -79,6 +87,10 @@ public class AudioDirectCapture implements AudioCapture {
                 startRecording();
                 return; // it worked
             } catch (UnsupportedOperationException e) {
+                if (recorder != null) {
+                    recorder.release();
+                    recorder = null;
+                }
                 if (attempts == 0) {
                     Ln.e("Failed to start audio capture");
                     Ln.e("On Android 11, audio capture must be started in the foreground, make sure that the device is unlocked when starting "
@@ -98,9 +110,16 @@ public class AudioDirectCapture implements AudioCapture {
             // Creating an AudioRecord using an AudioRecord.Builder does not work on Vivo phones:
             // - <https://github.com/Genymobile/scrcpy/issues/3805>
             // - <https://github.com/Genymobile/scrcpy/pull/3862>
-            recorder = Workarounds.createAudioRecord(audioSource, SAMPLE_RATE, CHANNEL_CONFIG, CHANNELS, CHANNEL_MASK, ENCODING);
+            recorder = Workarounds.createAudioRecord(audioSource, SAMPLE_RATE, CHANNEL_CONFIG, CHANNELS, CHANNEL_MASK, ENCODING,
+                    applicationContext != null ? applicationContext : FakeContext.get());
         }
         recorder.startRecording();
+        if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+            recorder.release();
+            recorder = null;
+            Ln.e("AudioRecord did not enter recording state");
+            throw new AudioCaptureException();
+        }
         reader = new AudioRecordReader(recorder);
     }
 
@@ -114,7 +133,7 @@ public class AudioDirectCapture implements AudioCapture {
 
     @Override
     public void start() throws AudioCaptureException {
-        if (Build.VERSION.SDK_INT == AndroidVersions.API_30_ANDROID_11) {
+        if (ShellAudioWorkaround.isRequired(Build.VERSION.SDK_INT, android.os.Process.myUid(), applicationContext != null)) {
             startWorkaroundAndroid11();
             try {
                 tryStartRecording(5, 100);
@@ -131,6 +150,7 @@ public class AudioDirectCapture implements AudioCapture {
         if (recorder != null) {
             // Will call .stop() if necessary, without throwing an IllegalStateException
             recorder.release();
+            recorder = null;
         }
     }
 

@@ -11,6 +11,13 @@ public final class VideoAdaptationTest {
         }
     }
 
+    private static BitrateLadder ladder(int initialLevel) {
+        // Test debounce semantics independently of production tuning.
+        BitrateLadder.Config config = new BitrateLadder.Config();
+        config.upgradeStableMs = 5000;
+        return new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, initialLevel, config);
+    }
+
     private static void hold(BitrateLadder ladder, int bps, long startMs, long endMs) {
         for (long time = startMs; time <= endMs; time += 100) {
             check(!ladder.update(bps, time), "Unexpected tier change at " + time);
@@ -18,7 +25,7 @@ public final class VideoAdaptationTest {
     }
 
     private static void testSpikeCannotSkipTiers() {
-        BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
+        BitrateLadder ladder = ladder(0);
         hold(ladder, 2_300_000, 0, 4900);
         check(ladder.update(14_000_000, 5000), "The next tier should be ready");
         check(ladder.getCurrentLevelIndex() == 1, "A single spike must not authorize the highest tier");
@@ -28,7 +35,7 @@ public final class VideoAdaptationTest {
     }
 
     private static void testRecoveryUsesFullWindow() {
-        BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 5);
+        BitrateLadder ladder = ladder(5);
         check(ladder.update(500_000, 0), "Severe congestion must immediately lower the tier");
         check(ladder.getCurrentLevelIndex() == 0, "Severe downgrade may skip tiers");
         hold(ladder, 14_000_000, 100, 5000);
@@ -37,7 +44,7 @@ public final class VideoAdaptationTest {
     }
 
     private static void testShortDipRestartsWindow() {
-        BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
+        BitrateLadder ladder = ladder(0);
         hold(ladder, 2_300_000, 0, 4900);
         check(!ladder.update(2_000_000, 4950), "A short budget dip cancels the pending upgrade");
         hold(ladder, 2_300_000, 4960, 9860);
@@ -45,13 +52,13 @@ public final class VideoAdaptationTest {
     }
 
     private static void testPauseAndPeerReset() {
-        BitrateLadder paused = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
+        BitrateLadder paused = ladder(0);
         hold(paused, 2_300_000, 0, 4900);
         check(!paused.update(0, 4950), "Pause should not change the current tier");
         hold(paused, 2_300_000, 4960, 9860);
         check(paused.update(2_300_000, 9960), "Zero budget must restart the full upgrade window");
 
-        BitrateLadder peer = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
+        BitrateLadder peer = ladder(0);
         hold(peer, 2_300_000, 0, 4900);
         peer.resetFeedback();
         hold(peer, 2_300_000, 5000, 9900);
@@ -59,19 +66,19 @@ public final class VideoAdaptationTest {
     }
 
     private static void testDowngradeHysteresisAndBounds() {
-        BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 2);
+        BitrateLadder ladder = ladder(2);
         hold(ladder, 3_000_000, 0, 2900);
         check(ladder.update(3_000_000, 3000), "Ordinary downgrade must retain its debounce");
         check(ladder.getCurrentLevelIndex() == 1, "Ordinary downgrade must select the lower tier");
         hold(ladder, 100_000, 3100, 6000);
         check(ladder.update(100_000, 6100), "Lowest tier should be reached after debounce");
         hold(ladder, 1, 6200, 12_000);
-        BitrateLadder top = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 5);
+        BitrateLadder top = ladder(5);
         hold(top, Integer.MAX_VALUE, 0, 10_000);
     }
 
     private static void testSparseFeedbackCanUpgrade() {
-        BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
+        BitrateLadder ladder = ladder(0);
         check(!ladder.update(8_000_000, 0), "First positive budget starts a candidate");
         check(!ladder.update(8_000_000, 3000), "Sparse feedback is not yet five seconds of stability");
         check(ladder.update(8_000_000, 6000), "SetRates gaps must not permanently block recovery");
@@ -83,7 +90,7 @@ public final class VideoAdaptationTest {
     }
 
     private static void testSparsePauseAndClockRegression() {
-        BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
+        BitrateLadder ladder = ladder(0);
         check(!ladder.update(8_000_000, 0), "Begin candidate");
         check(!ladder.update(0, 4000), "Explicit pause clears a candidate despite sparse feedback");
         check(!ladder.update(8_000_000, 10_000), "Recovery starts a new window");

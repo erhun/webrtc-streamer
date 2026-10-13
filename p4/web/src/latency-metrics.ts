@@ -4,9 +4,24 @@ export function meanDelta(sum: number, count: number, oldSum: number, oldCount: 
   return (sum - oldSum) / (count - oldCount) * scale;
 }
 type Stat = { id: string; type: string; kind?: string; mediaType?: string;
+  timestamp?: number; framesEncoded?: number;
   totalPacketSendDelay: number; packetsSent: number; jitterBufferDelay: number; jitterBufferEmittedCount: number;
   jitterBufferTargetDelay: number; jitterBufferMinimumDelay: number; totalDecodeTime: number; framesDecoded: number };
 type Telemetry = { type: string; captureUs: number; captureFrames: number; allocatedBps: number; configuredBps: number; encodedBytes: number; sampleUs: number; outbound: Stat[] };
+export function encodedFrameRate(rows: Stat[], previous: Map<string, Stat>): number | null {
+  let fps = 0, measured = false;
+  const next = new Map<string, Stat>();
+  for (const row of rows) {
+    if ((row.kind ?? row.mediaType) !== 'video') continue;
+    next.set(row.id, row);
+    const old = previous.get(row.id);
+    if (!old) continue;
+    const rate = meanDelta(row.framesEncoded!, row.timestamp!, old.framesEncoded!, old.timestamp!, 1000);
+    if (rate !== null) { fps += rate; measured = true; }
+  }
+  previous.clear(); next.forEach((row, id) => previous.set(id, row));
+  return measured ? fps : null;
+}
 export function streamMean(rows: Stat[], previous: Map<string, Stat>, sending: boolean,
     metric: 'jitterBufferDelay' | 'jitterBufferTargetDelay' | 'jitterBufferMinimumDelay' | 'totalDecodeTime' = 'jitterBufferDelay'): number | null {
   let sum = 0, count = 0;
@@ -28,7 +43,8 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
     getPeer: () => RTCPeerConnection | null, getChannel: () => RTCDataChannel | null): void {
   const bar = document.createElement('div');
   bar.className = 'stream-metrics';
-  const labels = ['采集帧龄', '发送排队', '接收缓冲', '分配码率', '配置码率', '编码输出', '目标缓冲', '最低缓冲', '解码耗时'];
+  const labels = ['采集帧龄', '发送排队', '接收缓冲', '分配码率', '配置码率', '编码输出', '目标缓冲', '最低缓冲', '解码耗时',
+    'JNI 输入样本率', 'WebRTC 帧率'];
   const tips = ['屏幕 PTS 到服务端 JNI 入口，含编码；区间每帧均值',
     '本区间已发出的视频 RTP 包的平均本地等待时间；不是当前队列长度或最老包年龄，不含网络传输',
     '浏览器视频抖动缓冲驻留；区间每帧均值，不含后续显示',
@@ -37,11 +53,14 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
     'JNI 收到的视频编码字节增量，含关键帧参数集，不含 RTP 开销',
     '浏览器统计的视频目标缓冲；区间每帧均值，不等于请求的 50ms',
     '浏览器估计的最低视频缓冲；区间每帧均值',
-    '视频解码累计耗时增量除以解码帧数增量'];
+    '视频解码累计耗时增量除以解码帧数增量',
+    '服务端 JNI 有效单调 PTS 帧龄样本的增量/时间；不包含无效 PTS 帧，不是源应用绘制频率',
+    'outbound-rtp framesEncoded 增量/时间；passthrough 中表示 WebRTC 接收编码回调，不是 MediaCodec 重编码'];
   const nodes = labels.map((_, i) => { const n = document.createElement('span'); n.title = tips[i]; bar.append(n); return n; });
   video.closest('.stage')!.before(bar);
   const show = (i: number, value: number | null): void => {
-    nodes[i].textContent = `${labels[i]}：${value === null ? '—' : ((i < 3 || i >= 6) ? value.toFixed(1) + ' ms' : (value / 1000).toFixed(0) + ' kbps')}`;
+    nodes[i].textContent = `${labels[i]}：${value === null ? '—' : i >= 9 ? value.toFixed(1) + ' fps'
+      : ((i < 3 || i >= 6) ? value.toFixed(1) + ' ms' : (value / 1000).toFixed(0) + ' kbps')}`;
   };
   const health = document.createElement('span');
   bar.append(health);
@@ -56,8 +75,9 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
   let owner: RTCPeerConnection | null = null, channel: RTCDataChannel | null = null;
   let previous: Telemetry | null = null, lastReply = 0, requestedAt = 0, busy = false;
   const outbound = new Map<string, Stat>(), inbound = new Map<string, Stat>();
+  const encodedFrames = new Map<string, Stat>();
   const detailCaches = [new Map<string, Stat>(), new Map<string, Stat>(), new Map<string, Stat>()];
-  const clear = (): void => { previous = null; outbound.clear(); inbound.clear(); detailCaches.forEach(cache => cache.clear()); lastReply = 0; requestedAt = 0; nodes.forEach((_, i) => show(i, null)); sendDelay = receiveDelay = null; updateHealth(); };
+  const clear = (): void => { previous = null; outbound.clear(); inbound.clear(); encodedFrames.clear(); detailCaches.forEach(cache => cache.clear()); lastReply = 0; requestedAt = 0; nodes.forEach((_, i) => show(i, null)); sendDelay = receiveDelay = null; updateHealth(); };
   const message = (event: MessageEvent): void => {
     if (typeof event.data !== 'string' || event.currentTarget !== getChannel() || owner !== getPeer()) return;
     try {
@@ -70,6 +90,8 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
       show(3, Number.isFinite(row.allocatedBps) && row.allocatedBps >= 0 ? row.allocatedBps : null);
       show(4, Number.isFinite(row.configuredBps) && row.configuredBps >= 0 ? row.configuredBps : null);
       show(5, previous ? meanDelta(row.encodedBytes, row.sampleUs, previous.encodedBytes, previous.sampleUs, 8000000) : null);
+      show(9, previous ? meanDelta(row.captureFrames, row.sampleUs, previous.captureFrames, previous.sampleUs, 1000000) : null);
+      show(10, encodedFrameRate(row.outbound.map(stat => ({ ...stat, timestamp: row.sampleUs / 1000 })), encodedFrames));
       updateHealth();
       previous = row; lastReply = performance.now(); requestedAt = 0;
     } catch { /* Binary control and unrelated messages do not affect metrics. */ }
@@ -83,7 +105,7 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
     }
     if (!pc || pc.connectionState !== 'connected') { clear(); return; }
     const now = performance.now();
-    if (lastReply && now - lastReply > 3500) { previous = null; outbound.clear(); show(0, null); show(1, null); [3, 4, 5].forEach(i => show(i, null)); sendDelay = null; updateHealth(); }
+    if (lastReply && now - lastReply > 3500) { previous = null; outbound.clear(); encodedFrames.clear(); show(0, null); show(1, null); [3, 4, 5, 9, 10].forEach(i => show(i, null)); sendDelay = null; updateHealth(); }
     if (dc?.readyState === 'open' && dc.bufferedAmount < 16384 && (!requestedAt || now - requestedAt > 5000)) {
       try { dc.send('scrcpy.latency.v1'); requestedAt = now; } catch { show(0, null); show(1, null); [3, 4, 5].forEach(i => show(i, null)); sendDelay = null; updateHealth(); }
     }

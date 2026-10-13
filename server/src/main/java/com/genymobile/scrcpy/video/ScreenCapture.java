@@ -26,7 +26,6 @@ import android.os.IBinder;
 import android.view.Surface;
 
 import java.io.IOException;
-import java.util.Locale;
 
 public class ScreenCapture extends SurfaceCapture {
 
@@ -46,6 +45,7 @@ public class ScreenCapture extends SurfaceCapture {
 
     private IBinder display;
     private VirtualDisplay virtualDisplay;
+    private Size virtualDisplaySize;
 
     private AffineMatrix transform;
     private OpenGLRunner glRunner;
@@ -107,18 +107,27 @@ public class ScreenCapture extends SurfaceCapture {
 
     @Override
     public void start(Surface surface) throws IOException {
-        // Always use device resolution for VirtualDisplay input so the display never needs
-        // to be recreated when the adaptive resolution tier changes. The GL filter handles
-        // downscaling from device resolution to the target video size.
-        Size inputSize = displayInfo.getSize();
-
-        AffineMatrix filterMatrix = transform != null ? transform : AffineMatrix.IDENTITY;
-        assert glRunner == null;
-        OpenGLFilter glFilter = new AffineOpenGLFilter(filterMatrix);
-        glRunner = new OpenGLRunner(glFilter);
-        surface = glRunner.start(inputSize, videoSize, surface);
+        Size inputSize = videoSize;
+        if (transform != null) {
+            inputSize = displayInfo.getSize();
+            assert glRunner == null;
+            OpenGLFilter glFilter = new AffineOpenGLFilter(transform);
+            glRunner = new OpenGLRunner(glFilter);
+            glRunner.setMaxFps(videoConstraints.getMaxFps());
+            glRunner.setPipelineStats(getPipelineStats());
+            surface = glRunner.start(inputSize, videoSize, surface);
+        }
+        if (getPipelineStats() != null) {
+            getPipelineStats().setMode(transform == null ? "direct" : "gl");
+        }
+        Ln.d("Capture path: " + (transform == null ? "direct" : "gl") + " input=" + inputSize
+                + " output=" + videoSize + " maxFps=" + videoConstraints.getMaxFps());
 
         if (virtualDisplay != null) {
+            if (!inputSize.equals(virtualDisplaySize)) {
+                virtualDisplay.resize(inputSize.getWidth(), inputSize.getHeight(), displayInfo.getDpi());
+                virtualDisplaySize = inputSize;
+            }
             virtualDisplay.setSurface(surface);
             Ln.d("Display: reusing existing VirtualDisplay id=" + virtualDisplay.getDisplay().getDisplayId());
         } else if (display != null) {
@@ -131,8 +140,15 @@ public class ScreenCapture extends SurfaceCapture {
                 int dpi = displayInfo.getDpi();
                 int flags = android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR;
                 Ln.d("Attempting DisplayManager API with AUTO_MIRROR flag (dpi=" + dpi + ", size=" + inputSize + ")");
-                virtualDisplay = ServiceManager.getDisplayManager()
-                        .createNewVirtualDisplay("scrcpy", inputSize.getWidth(), inputSize.getHeight(), dpi, surface, flags);
+                if (displayId == 0) {
+                    virtualDisplay = ServiceManager.getDisplayManager()
+                            .createNewVirtualDisplay("scrcpy", inputSize.getWidth(), inputSize.getHeight(), dpi, surface, flags);
+                } else {
+                    // AUTO_MIRROR selects the default display. Preserve explicit non-default capture targets.
+                    virtualDisplay = ServiceManager.getDisplayManager()
+                            .createVirtualDisplay("scrcpy", inputSize.getWidth(), inputSize.getHeight(), displayId, surface);
+                }
+                virtualDisplaySize = inputSize;
                 Ln.d("Display: using DisplayManager API with AUTO_MIRROR flag");
             } catch (Exception displayManagerException) {
                 Ln.e("DisplayManager API failed", displayManagerException);
@@ -165,9 +181,12 @@ public class ScreenCapture extends SurfaceCapture {
             Ln.d("ScreenCapture.stop(): detached surface from VirtualDisplay id=" + virtualDisplay.getDisplay().getDisplayId());
         }
         if (display != null) {
-            Ln.d("ScreenCapture.stop(): destroying SurfaceControl display token");
-            SurfaceControl.destroyDisplay(display);
-            display = null;
+            SurfaceControl.openTransaction();
+            try {
+                SurfaceControl.setDisplaySurface(display, null);
+            } finally {
+                SurfaceControl.closeTransaction();
+            }
         }
         if (glRunner != null) {
             glRunner.stopAndRelease();
@@ -178,16 +197,19 @@ public class ScreenCapture extends SurfaceCapture {
     @Override
     public void release() {
         displayMonitor.stopAndRelease();
-
-        if (display != null) {
-            Ln.d("ScreenCapture.release(): destroying SurfaceControl display token");
-            SurfaceControl.destroyDisplay(display);
-            display = null;
-        }
-        if (virtualDisplay != null) {
-            Ln.d("ScreenCapture.release(): releasing VirtualDisplay id=" + virtualDisplay.getDisplay().getDisplayId());
-            virtualDisplay.release();
-            virtualDisplay = null;
+        try {
+            stop(); // Also cleans a GL runner if start() failed before captureStarted was set.
+        } finally {
+            if (display != null) {
+                Ln.d("ScreenCapture.release(): destroying SurfaceControl display token");
+                SurfaceControl.destroyDisplay(display);
+                display = null;
+            }
+            if (virtualDisplay != null) {
+                Ln.d("ScreenCapture.release(): releasing VirtualDisplay id=" + virtualDisplay.getDisplay().getDisplayId());
+                virtualDisplay.release();
+                virtualDisplay = null;
+            }
         }
     }
 
@@ -199,7 +221,15 @@ public class ScreenCapture extends SurfaceCapture {
     @Override
     protected boolean applyNewVideoConstraints(VideoConstraints videoConstraints) {
         this.videoConstraints = videoConstraints;
+        if (glRunner != null) {
+            glRunner.setMaxFps(videoConstraints.getMaxFps());
+        }
         return true;
+    }
+
+    @Override
+    public boolean controlsFrameRate() {
+        return transform != null;
     }
 
     private static IBinder createDisplay() throws Exception {

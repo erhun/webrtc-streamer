@@ -16,9 +16,8 @@ import java.lang.reflect.Field;
 
 public final class FakeContext extends ContextWrapper {
 
-    public static final String PACKAGE_NAME = "com.genymobile.scrcpy";
+    public static final String PACKAGE_NAME = "com.android.shell";
     public static final int ROOT_UID = 0; // Like android.os.Process.ROOT_UID, but before API 29
-    public static final int SYSTEM_UID = 1000;
 
     private static final FakeContext INSTANCE = new FakeContext();
 
@@ -75,7 +74,7 @@ public final class FakeContext extends ContextWrapper {
     @TargetApi(AndroidVersions.API_31_ANDROID_12)
     @Override
     public AttributionSource getAttributionSource() {
-        AttributionSource.Builder builder = new AttributionSource.Builder(SYSTEM_UID);
+        AttributionSource.Builder builder = new AttributionSource.Builder(Process.SHELL_UID);
         builder.setPackageName(PACKAGE_NAME);
         return builder.build();
     }

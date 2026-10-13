@@ -3,12 +3,13 @@ export function mountMetrics(video: HTMLVideoElement, getPeer: () => RTCPeerConn
   const bar = document.createElement('div');
   bar.className = 'stream-metrics';
   bar.setAttribute('aria-label', '实时串流统计');
-  const fields = ['解码帧率', '视频码率', '分辨率', '连接质量', '往返延迟', '丢包率'].map(label => {
+  const fields = ['解码帧率', '视频码率', '分辨率', '连接质量', '往返延迟', '丢包率', '呈现帧率'].map(label => {
     const node = document.createElement('span');
     bar.append(node);
     return { node, label };
   });
   fields[0].node.title = '浏览器 framesDecoded 的区间增量，不是 MediaCodec 编码帧率或屏幕呈现帧率';
+  fields[6].node.title = 'requestVideoFrameCallback 的 presentedFrames 增量，表示提交到浏览器合成器的帧率';
   fields[3].node.className = 'quality';
   fields[3].node.title = '根据往返延迟和接收丢包率估算，不是 Wi-Fi 信号强度';
   video.closest('.stage')!.before(bar);
@@ -20,14 +21,25 @@ export function mountMetrics(video: HTMLVideoElement, getPeer: () => RTCPeerConn
   let previous = new Map<string, Sample>();
   let owner: RTCPeerConnection | null = null;
   let busy = false;
-  show(['—', '—', '—', '未连接', '—', '—']);
+  let presentedCount: number | undefined;
+  let previousPresented: { count: number; at: number } | null = null;
+  let presentationCallback = 0, stopped = false;
+  if (typeof video.requestVideoFrameCallback === 'function') {
+    const observe = (_now: number, metadata: VideoFrameCallbackMetadata): void => {
+      presentedCount = metadata.presentedFrames;
+      if (!stopped) presentationCallback = video.requestVideoFrameCallback(observe);
+    };
+    presentationCallback = video.requestVideoFrameCallback(observe);
+  }
+  show(['—', '—', '—', '未连接', '—', '—', '—']);
   const timer = window.setInterval(async () => {
     if (busy) return;
     const pc = getPeer();
-    if (pc !== owner) { owner = pc; previous.clear(); }
+    if (pc !== owner) { owner = pc; previous.clear(); previousPresented = null; }
     if (!pc || pc.connectionState !== 'connected') {
       previous.clear();
-      show(['—', '—', '—', pc?.connectionState === 'connecting' ? '连接中' : '未连接', '—', '—']);
+      previousPresented = null;
+      show(['—', '—', '—', pc?.connectionState === 'connecting' ? '连接中' : '未连接', '—', '—', '—']);
       return;
     }
     busy = true;
@@ -67,14 +79,23 @@ export function mountMetrics(video: HTMLVideoElement, getPeer: () => RTCPeerConn
       }
       const resolution = width && height ? `${width} × ${height}` :
         video.videoWidth && video.videoHeight ? `${video.videoWidth} × ${video.videoHeight}` : '—';
+      const now = performance.now();
+      const presentedFps = presentedCount !== undefined && previousPresented && presentedCount >= previousPresented.count
+        && now > previousPresented.at ? (presentedCount - previousPresented.count) * 1000 / (now - previousPresented.at) : undefined;
+      previousPresented = presentedCount === undefined ? null : { count: presentedCount, at: now };
       show([measured ? `${fps.toFixed(1)} fps` : '—', measured ?
         bps >= 1e6 ? `${(bps / 1e6).toFixed(2)} Mbps` : `${(bps / 1000).toFixed(0)} kbps` : '—',
         resolution, quality, rtt === undefined ? '—' : `${Math.round(rtt)} ms`,
-        loss === undefined ? '—' : `${loss.toFixed(1)}%`], level);
+        loss === undefined ? '—' : `${loss.toFixed(1)}%`, presentedFps === undefined ? '—' : `${presentedFps.toFixed(1)} fps`], level);
     } catch {
       previous.clear();
-      show(['—', '—', '—', '统计暂不可用', '—', '—']);
+      previousPresented = null;
+      show(['—', '—', '—', '统计暂不可用', '—', '—', '—']);
     } finally { busy = false; }
   }, 1000);
-  window.addEventListener('pagehide', () => { clearInterval(timer); }, { once: true });
+  window.addEventListener('pagehide', () => {
+    stopped = true;
+    clearInterval(timer);
+    if (presentationCallback) video.cancelVideoFrameCallback(presentationCallback);
+  }, { once: true });
 }

@@ -12,6 +12,7 @@ public final class BitrateAggregator {
         void onAggregatedKeyFrameRequest();
         /** 发送队列延迟过高，请求快速降档（不等 BWE 反馈）。 */
         default void onQueueDelayHigh(long nowMs) {}
+        default void onAggregatedPeerReset() {}
     }
 
     private static final class Sample {
@@ -36,16 +37,41 @@ public final class BitrateAggregator {
 
     public synchronized void removeBridge(NativeEncoderBridge bridge) {
         samples.remove(bridge);
+        if (!hasActivePeer()) {
+            output.onAggregatedPeerReset();
+        }
+        emitBudget();
     }
 
     public synchronized void updateBitrate(NativeEncoderBridge source, int bps, double fps) {
-        if (bps <= 0) {
-            // 无有效反馈：移除该 bridge，避免用 0 或旧值污染聚合结果。
-            samples.remove(source);
-        } else {
-            samples.put(source, new Sample(bps, fps));
+        if (!samples.containsKey(source)) {
+            return; // A late callback must not resurrect a disconnected peer's low allocation.
         }
+        samples.put(source, new Sample(Math.max(0, bps), fps));
+        emitBudget();
+    }
 
+    public synchronized void resetBridge(NativeEncoderBridge source) {
+        if (!samples.containsKey(source)) {
+            return;
+        }
+        samples.put(source, new Sample(0, 0));
+        if (!hasActivePeer()) {
+            output.onAggregatedPeerReset();
+        }
+        emitBudget();
+    }
+
+    private boolean hasActivePeer() {
+        for (Sample sample : samples.values()) {
+            if (sample.bps > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void emitBudget() {
         int minBps = Integer.MAX_VALUE;
         double minFps = 0;
         for (Sample s : samples.values()) {

@@ -2,6 +2,9 @@ package com.genymobile.scrcpy.opengl;
 
 import com.genymobile.scrcpy.model.Size;
 import com.genymobile.scrcpy.util.Threads;
+import com.genymobile.scrcpy.util.Ln;
+import com.genymobile.scrcpy.video.FrameRateLimiter;
+import com.genymobile.scrcpy.video.VideoPipelineStats;
 
 import android.graphics.SurfaceTexture;
 import android.opengl.EGL14;
@@ -17,7 +20,8 @@ import android.os.HandlerThread;
 import android.view.Surface;
 
 import java.util.concurrent.Callable;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public final class OpenGLRunner {
 
@@ -35,7 +39,19 @@ public final class OpenGLRunner {
     private Surface inputSurface;
     private int textureId;
 
-    private boolean stopped;
+    private volatile boolean stopped;
+    private boolean releaseRequested;
+    private final CountDownLatch releaseDone = new CountDownLatch(1);
+    private final FrameRateLimiter frameRateLimiter = new FrameRateLimiter();
+    private VideoPipelineStats pipelineStats;
+
+    public void setMaxFps(float fps) {
+        frameRateLimiter.setMaxFps(fps);
+    }
+
+    public void setPipelineStats(VideoPipelineStats stats) {
+        pipelineStats = stats;
+    }
 
     public OpenGLRunner(OpenGLFilter filter, float[] overrideTransformMatrix) {
         this.filter = filter;
@@ -109,6 +125,7 @@ public final class OpenGLRunner {
                 EGL14.EGL_BLUE_SIZE, 8,
                 EGL14.EGL_ALPHA_SIZE, 8,
                 EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                EGLExt.EGL_RECORDABLE_ANDROID, 1,
                 EGL14.EGL_NONE
         };
 
@@ -127,7 +144,7 @@ public final class OpenGLRunner {
                 EGL14.EGL_NONE
         };
         eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, contextAttribList, 0);
-        if (eglContext == null) {
+        if (eglContext == EGL14.EGL_NO_CONTEXT) {
             EGL14.eglTerminate(eglDisplay);
             throw new OpenGLException("Failed to create EGL context");
         }
@@ -136,7 +153,7 @@ public final class OpenGLRunner {
                 EGL14.EGL_NONE
         };
         eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, outputSurface, surfaceAttribList, 0);
-        if (eglSurface == null) {
+        if (eglSurface == EGL14.EGL_NO_SURFACE) {
             EGL14.eglDestroyContext(eglDisplay, eglContext);
             EGL14.eglTerminate(eglDisplay);
             throw new OpenGLException("Failed to create EGL window surface");
@@ -148,6 +165,13 @@ public final class OpenGLRunner {
             EGL14.eglTerminate(eglDisplay);
             throw new OpenGLException("Failed to make EGL context current");
         }
+
+        int[] minSwap = new int[1];
+        EGL14.eglGetConfigAttrib(eglDisplay, eglConfig, EGL14.EGL_MIN_SWAP_INTERVAL, minSwap, 0);
+        if (!EGL14.eglSwapInterval(eglDisplay, 0)) {
+            Ln.w("GL encoder surface rejected swap interval 0: " + EGL14.eglGetError());
+        }
+        Ln.d("GL encoder surface: recordable=true requestedSwapInterval=0 minSwapInterval=" + minSwap[0]);
 
         int[] textures = new int[1];
         GLES20.glGenTextures(1, textures, 0);
@@ -183,7 +207,19 @@ public final class OpenGLRunner {
         GLES20.glViewport(0, 0, outputSize.getWidth(), outputSize.getHeight());
         GLUtils.checkGlError();
 
+        long updateStartNs = System.nanoTime();
         surfaceTexture.updateTexImage();
+        if (pipelineStats != null) {
+            pipelineStats.onGlInput(System.nanoTime() - updateStartNs);
+        }
+        long timestampNs = surfaceTexture.getTimestamp();
+        // Consume the input even when skipping, so SurfaceFlinger can reuse its raw buffer.
+        if (!frameRateLimiter.shouldRender(timestampNs)) {
+            if (pipelineStats != null) {
+                pipelineStats.onGlSkipped();
+            }
+            return;
+        }
 
         float[] matrix;
         if (overrideTransformMatrix != null) {
@@ -195,37 +231,65 @@ public final class OpenGLRunner {
 
         filter.draw(textureId, matrix);
 
-        EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, surfaceTexture.getTimestamp());
-        EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+        EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, timestampNs);
+        long swapStartNs = System.nanoTime();
+        if (!EGL14.eglSwapBuffers(eglDisplay, eglSurface)) {
+            Ln.e("GL encoder swap failed: " + EGL14.eglGetError());
+            return;
+        }
+        if (pipelineStats != null) {
+            pipelineStats.onGlSubmitted(System.nanoTime() - swapStartNs);
+        }
     }
 
-    public void stopAndRelease() {
-        final Semaphore sem = new Semaphore(0);
-
-        handler.post(() -> {
-            stopped = true;
-            surfaceTexture.setOnFrameAvailableListener(null, handler);
-
-            filter.release();
-
-            int[] textures = {textureId};
-            GLES20.glDeleteTextures(1, textures, 0);
-            GLUtils.checkGlError();
-
-            EGL14.eglDestroySurface(eglDisplay, eglSurface);
-            EGL14.eglDestroyContext(eglDisplay, eglContext);
-            EGL14.eglTerminate(eglDisplay);
-            eglDisplay = EGL14.EGL_NO_DISPLAY;
-            eglContext = EGL14.EGL_NO_CONTEXT;
-            eglSurface = EGL14.EGL_NO_SURFACE;
-            surfaceTexture.release();
-            inputSurface.release();
-
-            sem.release();
-        });
+    public synchronized void stopAndRelease() {
+        stopped = true;
+        if (!releaseRequested) {
+            releaseRequested = true;
+            if (!handler.post(() -> {
+                try {
+                    if (surfaceTexture != null) {
+                        surfaceTexture.setOnFrameAvailableListener(null, handler);
+                    }
+                    filter.release();
+                    int[] textures = {textureId};
+                    GLES20.glDeleteTextures(1, textures, 0);
+                } catch (RuntimeException e) {
+                    Ln.e("GL filter cleanup failed", e);
+                } finally {
+                    try {
+                        if (eglDisplay != null && eglDisplay != EGL14.EGL_NO_DISPLAY) {
+                            EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
+                                if (eglSurface != null && eglSurface != EGL14.EGL_NO_SURFACE) {
+                                    EGL14.eglDestroySurface(eglDisplay, eglSurface);
+                                }
+                                if (eglContext != null && eglContext != EGL14.EGL_NO_CONTEXT) {
+                                    EGL14.eglDestroyContext(eglDisplay, eglContext);
+                                }
+                            EGL14.eglTerminate(eglDisplay);
+                        }
+                        if (surfaceTexture != null) {
+                            surfaceTexture.release();
+                        }
+                        if (inputSurface != null) {
+                            inputSurface.release();
+                        }
+                        } catch (RuntimeException e) {
+                            Ln.e("GL surface cleanup failed", e);
+                    } finally {
+                        releaseDone.countDown();
+                    }
+                }
+            })) {
+                releaseDone.countDown();
+                throw new IllegalStateException("GL cleanup handler is stopped");
+            }
+        }
 
         try {
-            sem.acquire();
+            if (!releaseDone.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("GL cleanup timed out; inspect swapMax/updateMax before restarting");
+            }
         } catch (InterruptedException e) {
             // Behave as if this method call was synchronous
             Thread.currentThread().interrupt();

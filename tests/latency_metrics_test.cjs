@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const {meanDelta, streamMean} = require(process.argv[2]);
+const {meanDelta, streamMean, encodedFrameRate} = require(process.argv[2]);
 assert.equal(meanDelta(300000, 3, 100000, 1, .001), 100);
 assert.equal(meanDelta(1, 1, 2, 2, 1000), null);
 assert.equal(meanDelta(1, 2, 1, 2, 1000), null);
@@ -34,3 +34,15 @@ for (const metric of ['jitterBufferTargetDelay', 'jitterBufferMinimumDelay', 'to
   assert.equal(streamMean([sample('b',0,0)], previous, false, metric), null);
 }
 console.log('Receiver buffer detail tests passed');
+
+const encoded = new Map();
+const frame = (id, framesEncoded, timestamp) => ({id, kind:'video', framesEncoded, timestamp});
+assert.equal(encodedFrameRate([frame('v',30,1000)], encoded), null);
+assert.equal(encodedFrameRate([frame('v',60,2000)], encoded), 30);
+assert.equal(encodedFrameRate([frame('v',60,3000)], encoded), 0); // stall is visible
+assert.equal(encodedFrameRate([frame('new',5,4000)], encoded), null); // new SSRC
+assert.equal(encodedFrameRate([frame('new',1,5000)], encoded), null); // counter reset
+assert.equal(encodedFrameRate([frame('new',undefined,6000)], encoded), null);
+assert.equal(encodedFrameRate([], encoded), null);
+assert.equal(meanDelta(60,2000000,30,1000000,1000000),30); // JNI frame samples / mono microseconds
+console.log('Pipeline frame counter tests passed');

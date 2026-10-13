@@ -56,7 +56,7 @@ public final class Server {
 
     public static final String SERVER_PATH;
 
-    private static Context applicationContext;
+    private static volatile Context applicationContext;
 
     public static Context getApplicationContext() {
         return applicationContext;
@@ -126,7 +126,9 @@ public final class Server {
         boolean audio = options.getAudio();
         boolean sendDummyByte = options.getSendDummyByte();
 
-        Workarounds.apply();
+        if (context == null) {
+            Workarounds.apply();
+        }
 
         List<AsyncProcessor> asyncProcessors = new ArrayList<>();
 
@@ -197,9 +199,9 @@ public final class Server {
                 AudioSource audioSource = options.getAudioSource();
                 AudioCapture audioCapture;
                 if (audioSource.isDirect()) {
-                    audioCapture = new AudioDirectCapture(audioSource);
+                    audioCapture = new AudioDirectCapture(audioSource, context);
                 } else {
-                    audioCapture = new AudioPlaybackCapture();
+                    audioCapture = new AudioPlaybackCapture(context);
                 }
 
                 audioSink = createAudioSink(bridge, connection, audioCodec, options);
@@ -242,6 +244,13 @@ public final class Server {
                             SurfaceEncoder encoder = encoderRef.get();
                             if (encoder != null) {
                                 encoder.onKeyFrameRequest();
+                            }
+                        }
+                        @Override
+                        public void onAggregatedPeerReset() {
+                            SurfaceEncoder encoder = encoderRef.get();
+                            if (encoder != null) {
+                                encoder.onPeerReset();
                             }
                         }
                     });
@@ -331,6 +340,10 @@ public final class Server {
             @Override
             public void onKeyFrameRequest() {
                 aggregator.requestKeyFrame();
+            }
+            @Override
+            public void onPeerReset() {
+                aggregator.resetBridge(bridge);
             }
         };
     }

@@ -14,8 +14,11 @@ def run(*args):
     subprocess.run(list(args), check=True)
 run(sys.executable, 'tests/run_video_adaptation.py')
 with tempfile.TemporaryDirectory(prefix='streaming-tests-', dir=root / 'tests') as temp:
+    logger = Path(temp) / 'Ln.java'
+    logger.write_text('package com.genymobile.scrcpy.util; public final class Ln {'
+                      'public static void d(String s) {} public static void w(String s) {} }\n')
     run(java, '-m', 'jdk.compiler/com.sun.tools.javac.Main', '-d', temp,
-        source + 'device/NativeEncoderBridge.java', source + 'device/DataChannelInputStream.java',
+        str(logger), source + 'device/NativeEncoderBridge.java', source + 'device/DataChannelInputStream.java',
         source + 'signal/SessionAdmission.java', source + 'video/CaptureRefreshGate.java', source + 'video/BitrateLadder.java', 'tests/StreamingTest.java', 'tests/ParseJava.java')
     run(java, '-cp', temp, 'StreamingTest')
     run(java, '-cp', temp, 'ParseJava', 'server/src/main/java')
@@ -31,4 +34,6 @@ with tempfile.TemporaryDirectory(prefix='streaming-tests-', dir=root / 'tests') 
     run(node, 'tests/first_frame_recovery_test.cjs', str(Path(temp) / 'first-frame-recovery.js'))
     run(node, tsc, 'p4/web/src/latency-metrics.ts', '--target', 'ES2020', '--module', 'commonjs', '--outDir', temp, '--strict', '--skipLibCheck')
     run(node, 'tests/latency_metrics_test.cjs', str(Path(temp) / 'latency-metrics.js'))
+    run(node, tsc, 'p4/web/src/stream-metrics.ts', '--target', 'ES2020', '--module', 'commonjs', '--outDir', temp, '--strict')
+    run(node, 'tests/presentation_metrics_test.cjs', str(Path(temp) / 'stream-metrics.js'))
 print('All dependency-light regressions passed')

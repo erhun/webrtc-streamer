@@ -14,6 +14,7 @@ import android.media.MediaCodec;
 import android.media.projection.MediaProjection;
 import android.os.Build;
 import android.os.IBinder;
+import android.content.Context;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -29,9 +30,19 @@ public final class AudioPlaybackCapture implements AudioCapture {
     private AudioRecord recorder;
     private AudioRecordReader reader;
     private MediaProjection mediaProjection;
+    private final Context applicationContext;
+
+    public AudioPlaybackCapture() {
+        this(null);
+    }
+
+    public AudioPlaybackCapture(Context context) {
+        applicationContext = context;
+    }
 
     @SuppressLint({"PrivateApi", "DiscouragedPrivateApi"})
-    private static MediaProjection createMediaProjection() throws AudioCaptureException {
+    private MediaProjection createMediaProjection() throws AudioCaptureException {
+        Context context = applicationContext != null ? applicationContext : FakeContext.get();
         try {
             Class<?> smClass = Class.forName("android.os.ServiceManager");
             Method getService = smClass.getDeclaredMethod("getService", String.class);
@@ -51,7 +62,7 @@ public final class AudioPlaybackCapture implements AudioCapture {
             Method createProjection = iManager.getClass().getMethod("createProjection",
                     int.class, String.class, int.class, boolean.class);
             Object iProjection = createProjection.invoke(iManager,
-                    android.os.Process.myUid(), FakeContext.PACKAGE_NAME, 2, false);
+                    android.os.Process.myUid(), context.getPackageName(), 2, false);
             if (iProjection == null) {
                 Ln.e("createProjection() returned null");
                 throw new AudioCaptureException();
@@ -62,7 +73,7 @@ public final class AudioPlaybackCapture implements AudioCapture {
             Constructor<?> mpCtor = MediaProjection.class.getDeclaredConstructor(
                     android.content.Context.class, iProjInterface);
             mpCtor.setAccessible(true);
-            return (MediaProjection) mpCtor.newInstance(FakeContext.get(), iProjection);
+            return (MediaProjection) mpCtor.newInstance(context, iProjection);
         } catch (AudioCaptureException e) {
             throw e;
         } catch (Exception e) {
@@ -72,7 +83,7 @@ public final class AudioPlaybackCapture implements AudioCapture {
     }
 
     @SuppressLint("MissingPermission")
-    private static AudioRecord createAudioRecord(MediaProjection mp) {
+    private AudioRecord createAudioRecord(MediaProjection mp) {
         AudioFormat format = new AudioFormat.Builder()
                 .setEncoding(ENCODING)
                 .setSampleRate(SAMPLE_RATE)
@@ -89,11 +100,14 @@ public final class AudioPlaybackCapture implements AudioCapture {
         int minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, ENCODING);
         int bufferSize = minBufferSize > 0 ? 8 * minBufferSize : 1 << 17;
 
-        return new AudioRecord.Builder()
+        AudioRecord.Builder builder = new AudioRecord.Builder()
                 .setAudioFormat(format)
                 .setAudioPlaybackCaptureConfig(playbackConfig)
-                .setBufferSizeInBytes(bufferSize)
-                .build();
+                .setBufferSizeInBytes(bufferSize);
+        if (Build.VERSION.SDK_INT >= AndroidVersions.API_31_ANDROID_12) {
+            builder.setContext(applicationContext != null ? applicationContext : FakeContext.get());
+        }
+        return builder.build();
     }
 
     @Override
@@ -118,9 +132,11 @@ public final class AudioPlaybackCapture implements AudioCapture {
     public void stop() {
         if (recorder != null) {
             recorder.release();
+            recorder = null;
         }
         if (mediaProjection != null) {
             mediaProjection.stop();
+            mediaProjection = null;
         }
     }
 

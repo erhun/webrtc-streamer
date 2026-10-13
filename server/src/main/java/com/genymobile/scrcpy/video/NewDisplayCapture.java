@@ -269,7 +269,12 @@ public class NewDisplayCapture extends SurfaceCapture {
             assert glRunner == null;
             OpenGLFilter glFilter = new AffineOpenGLFilter(displayTransform);
             glRunner = new OpenGLRunner(glFilter);
+            glRunner.setMaxFps(videoConstraints.getMaxFps());
+            glRunner.setPipelineStats(getPipelineStats());
             surface = glRunner.start(physicalSize, videoSize, surface);
+        }
+        if (getPipelineStats() != null) {
+            getPipelineStats().setMode(displayTransform == null ? "direct-new-display" : "gl-new-display");
         }
 
         if (virtualDisplay == null) {
@@ -318,7 +323,15 @@ public class NewDisplayCapture extends SurfaceCapture {
     @Override
     protected boolean applyNewVideoConstraints(VideoConstraints videoConstraints) {
         setVideoConstraints(videoConstraints); // with synchronization
+        if (glRunner != null) {
+            glRunner.setMaxFps(videoConstraints.getMaxFps());
+        }
         return true;
+    }
+
+    @Override
+    public boolean controlsFrameRate() {
+        return displayTransform != null;
     }
 
     private static int scaleDpi(Size initialSize, int initialDpi, Size size) {

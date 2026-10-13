@@ -13,6 +13,20 @@ import java.io.IOException;
 public abstract class SurfaceCapture {
 
     private CaptureControl captureControl;
+    private VideoPipelineStats pipelineStats;
+
+    public final void setPipelineStats(VideoPipelineStats stats) {
+        pipelineStats = stats;
+    }
+
+    protected final VideoPipelineStats getPipelineStats() {
+        return pipelineStats;
+    }
+
+    /** GL capture samples raw frames itself; direct capture uses MediaCodec's surface-input limiter. */
+    public boolean controlsFrameRate() {
+        return false;
+    }
 
     /**
      * Called once before the first capture starts.

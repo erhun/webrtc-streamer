@@ -60,7 +60,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final List<CodecOption> codecOptions;
     private int videoBitRate;
     private final int maxSize;
-    private float maxFps;
     private final float requestedMaxFps;
     private final boolean downsizeOnError;
     private final int minSizeAlignment;
@@ -77,8 +76,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final BitrateLadder bitrateLadder = new BitrateLadder();
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
-    private int smoothedBitrate = -1;
-    private static final double SMOOTHING_ALPHA = 0.25; // EMA 系数：0.25 表示新值权重 25%，历史值权重 75%（平衡平滑与响应速度）
+    private int latestBudgetBps = -1;
+    private final VideoPipelineStats pipelineStats = new VideoPipelineStats();
     private boolean pendingKeyFrame;
     private boolean pendingPeerRefresh;
     private final CaptureRefreshGate captureRefreshGate = new CaptureRefreshGate();
@@ -86,12 +85,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private boolean suspended;
     private boolean waitingForKeyFrame;
 
-    /**
-     * targetFps：逻辑目标帧率，可在热更新路径动态调整。
-     * encoderFps：创建 MediaFormat 时使用的帧率，仅在编码器重建时更新。
-     * 二者分离，避免热更新污染编码器创建参数。
-     */
-    private float targetFps;
+    // Configured FPS changes rebuild the codec so its surface-input limit is updated.
     private float encoderFps;
 
     private VideoConstraints videoConstraints;
@@ -101,15 +95,14 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         this.streamer = streamer;
         this.videoBitRate = options.getVideoBitRate();
         this.maxSize = options.getMaxSize();
-        this.maxFps = options.getMaxFps();
-        this.requestedMaxFps = maxFps;
-        this.targetFps = maxFps;
-        this.encoderFps = maxFps;
+        this.requestedMaxFps = options.getMaxFps();
+        this.encoderFps = requestedMaxFps;
         this.codecOptions = options.getVideoCodecOptions();
         this.encoderName = options.getVideoEncoder();
         this.downsizeOnError = options.getDownsizeOnError();
         this.minSizeAlignment = options.getMinSizeAlignment();
         this.ignoreVideoEncoderConstraints = options.getIgnoreVideoEncoderConstraints();
+        capture.setPipelineStats(pipelineStats);
     }
 
     private void streamCapture() throws IOException, ConfigurationException {
@@ -131,7 +124,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             Ln.d("Actual video size alignment: " + alignment + "px");
         }
 
-        videoConstraints = new VideoConstraints(maxSize, alignment, null);
+        videoConstraints = new VideoConstraints(maxSize, alignment, null, encoderFps > 0 ? encoderFps : 30);
         capture.init(captureControl, videoConstraints);
 
         try {
@@ -157,24 +150,27 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     }
                     videoConstraints = next;
                 }
-                MediaFormat format = createFormat(codec.getMimeType(), videoBitRate, encoderFps, codecOptions);
                 Ln.d("Capture configure: resetReasons=" + resetReasons + " bitrate=" + videoBitRate
                         + " maxSize=" + adaptiveMaxSize + " maxFps=" + encoderFps);
                 capture.prepare();
                 Size size = capture.getSize();
+                MediaFormat format = createFormat(codec.getMimeType(), videoBitRate, encoderFps, codecOptions);
+                if (!capture.controlsFrameRate() && !format.containsKey(KEY_MAX_FPS_TO_ENCODER)) {
+                    // Direct capture: limit raw surface input, never discard encoded H.264 reference frames.
+                    format.setFloat(KEY_MAX_FPS_TO_ENCODER, encoderFps > 0 ? encoderFps : 30);
+                }
 
                 format.setInteger(MediaFormat.KEY_WIDTH, size.getWidth());
                 format.setInteger(MediaFormat.KEY_HEIGHT, size.getHeight());
+                Ln.d("Video format: " + format);
 
                 Surface surface = null;
                 boolean mediaCodecStarted = false;
-                boolean captureStarted = false;
                 try {
                     mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                     surface = mediaCodec.createInputSurface();
 
                     capture.start(surface);
-                    captureStarted = true;
 
                     mediaCodec.start();
                     streamer.reportVideoBitrate(videoBitRate);
@@ -208,35 +204,40 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 } finally {
                     captureControl.setRunningMediaCodec(null);
 
-                    if (captureStarted) {
+                    try {
+                        // start() may have allocated a GL runner before failing. Stop partial captures too.
                         capture.stop();
-                    }
-
-                    if (captureStarted && mediaCodecStarted) {
-                        SystemClock.sleep(50);
-                    }
-
-                    if (mediaCodecStarted) {
+                    } finally {
                         try {
-                            mediaCodec.signalEndOfInputStream();
-                        } catch (Exception e) {
-                            // ignore
+                            if (mediaCodecStarted) {
+                                try {
+                                    mediaCodec.signalEndOfInputStream();
+                                } catch (Exception e) {
+                                    // Already ended or abandoned.
+                                }
+                                try {
+                                    mediaCodec.stop();
+                                } catch (IllegalStateException e) {
+                                    // Already stopped.
+                                }
+                            }
+                            if (!stopped.get()) {
+                                mediaCodec.reset();
+                            }
+                        } finally {
+                            if (surface != null) {
+                                surface.release();
+                            }
                         }
-                        try {
-                            mediaCodec.stop();
-                        } catch (IllegalStateException e) {
-                            // ignore
-                        }
-                    }
-                    if (!stopped.get()) { mediaCodec.reset(); }
-                    if (surface != null) {
-                        surface.release();
                     }
                 }
             } while (alive);
         } finally {
-            capture.release();
-            mediaCodec.release();
+            try {
+                capture.release();
+            } finally {
+                mediaCodec.release();
+            }
         }
     }
 
@@ -295,21 +296,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private void encode(MediaCodec codec, PacketSink streamer) throws IOException {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
 
-        // ============ 统计字段 ============
-        long lastOutputNs = 0;
-        long windowStartNs = System.nanoTime();
-        int windowFrameCount = 0;
-        long totalEncodeCostNs = 0;
-        long maxEncodeCostNs = 0;
-        long dequeueBlockTotalNs = 0;
-        long dequeueBlockMaxNs = 0;
-        int dequeueBlockCount = 0;
-        int slowFrameCount = 0;  // 编码耗时 > 33ms 的帧数
-
-        // PTS → 输入时刻（System.nanoTime 基准）
-        final java.util.concurrent.ConcurrentHashMap<Long, Long> inputTimestampMap =
-                new java.util.concurrent.ConcurrentHashMap<>();
-
         boolean eos = false;
         boolean loggedFirstOutput = false;
         boolean loggedFirstKey = false;
@@ -317,14 +303,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         do {
             applyFeedback(codec);
 
-            long dequeueStartNs = System.nanoTime();
             int outputBufferId = codec.dequeueOutputBuffer(bufferInfo, 10000);
-            long dequeueCostNs = System.nanoTime() - dequeueStartNs;
-
             if (outputBufferId < 0) {
-                dequeueBlockTotalNs += dequeueCostNs;
-                if (dequeueCostNs > dequeueBlockMaxNs) dequeueBlockMaxNs = dequeueCostNs;
-                dequeueBlockCount++;
                 continue;
             }
 
@@ -347,58 +327,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                         loggedFirstKey |= key;
                     }
 
-                    // ============ 编码耗时统计 ============
                     if (!isConfig) {
-                        long nowNs = System.nanoTime();
-
-                        // 1. 帧间隔
-                        if (lastOutputNs > 0) {
-                            long interFrameNs = nowNs - lastOutputNs;
-                            if (interFrameNs > 40_000_000L) {
-                                Ln.d("Encode slow: inter-frame=" + (interFrameNs / 1_000_000) + "ms");
-                            }
-                        }
-                        lastOutputNs = nowNs;
-
-                        // 2. input→output 真实延迟
-                        Long inputNs = inputTimestampMap.remove(bufferInfo.presentationTimeUs);
-                        long encodeCostNs = -1;
-                        if (inputNs != null) {
-                            encodeCostNs = nowNs - inputNs;
-                            totalEncodeCostNs += encodeCostNs;
-                            if (encodeCostNs > maxEncodeCostNs) maxEncodeCostNs = encodeCostNs;
-                            if (encodeCostNs > 33_000_000L) slowFrameCount++;
-                        }
-
-                        // 3. 窗口统计
-                        windowFrameCount++;
-                        if (windowFrameCount >= 30) {
-                            long windowDurationNs = nowNs - windowStartNs;
-                            double fps = windowFrameCount * 1_000_000_000.0 / windowDurationNs;
-                            long avgEncodeNs = totalEncodeCostNs / windowFrameCount;
-
-                            Ln.d(String.format(
-                                    "Encode stats: frames=%d duration=%dms fps=%.1f "
-                                            + "avgEncode=%dms maxEncode=%dms slowFrames=%d "
-                                            + "dequeueBlockAvg=%dms dequeueBlockMax=%dms",
-                                    windowFrameCount,
-                                    windowDurationNs / 1_000_000,
-                                    fps,
-                                    avgEncodeNs / 1_000_000,
-                                    maxEncodeCostNs / 1_000_000,
-                                    slowFrameCount,
-                                    dequeueBlockCount > 0 ? (dequeueBlockTotalNs / dequeueBlockCount / 1_000_000) : 0,
-                                    dequeueBlockMaxNs / 1_000_000));
-
-                            windowStartNs = nowNs;
-                            windowFrameCount = 0;
-                            totalEncodeCostNs = 0;
-                            maxEncodeCostNs = 0;
-                            dequeueBlockTotalNs = 0;
-                            dequeueBlockMaxNs = 0;
-                            dequeueBlockCount = 0;
-                            slowFrameCount = 0;
-                        }
+                        pipelineStats.onCodecFrame();
                     }
 
                     boolean bootstrap = !isConfig && captureRefreshGate.consumeBootstrapFrame(key);
@@ -406,7 +336,11 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                         Ln.d("Peer bootstrap: forwarding IDR to initialize native encoder");
                     }
                     if (isConfig || bootstrap || (!suspended && (!waitingForKeyFrame || key))) {
+                        long handoffStartNs = System.nanoTime();
                         streamer.writePacket(codecBuffer, bufferInfo);
+                        if (!isConfig) {
+                            pipelineStats.onHandoff(System.nanoTime() - handoffStartNs);
+                        }
                         if (key) { waitingForKeyFrame = false; }
                     }
                 }
@@ -485,10 +419,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         Ln.d("createFormat: maxFps=" + maxFps + " -> targetFps=" + targetFps);
         format.setInteger(MediaFormat.KEY_FRAME_RATE, targetFps);
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        // 缩短 I 帧间隔到 2 秒（更频繁的关键帧有助于快速恢复）
+        // Periodic GOP; PLI may request an earlier IDR.
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, DEFAULT_I_FRAME_INTERVAL);
 
-        // CBR 码率模式（WebRTC 场景推荐，避免帧率波动）
+        // Requested bitrate mode; actual frame cadence is controlled before encoding.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             format.setInteger(MediaFormat.KEY_BITRATE_MODE,
                     MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR);
@@ -520,6 +454,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     public void start(TerminationListener listener) {
         thread = new Thread(() -> {
             Looper.prepare();
+            pipelineStats.start();
             try {
                 streamCapture();
             } catch (ConfigurationException e) {
@@ -529,6 +464,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     Ln.e("Video encoding error", e);
                 }
             } finally {
+                pipelineStats.close();
                 Ln.d("Screen streaming stopped");
                 listener.onTerminated(true);
             }
@@ -555,15 +491,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     public void onBitrate(int bps, double fps) {
         synchronized (feedbackLock) {
             pendingBitrate = Math.max(0, bps);
-            // 应用指数移动平均（EMA）平滑带宽波动
-            if (smoothedBitrate < 0) {
-                smoothedBitrate = pendingBitrate;
-            } else {
-                smoothedBitrate = (int) (SMOOTHING_ALPHA * pendingBitrate + (1 - SMOOTHING_ALPHA) * smoothedBitrate);
-            }
+            latestBudgetBps = pendingBitrate;
             // Observe every feedback event, even if codec reset coalesces multiple callbacks.
             // Otherwise a short budget dip/zero can disappear before applyFeedback sees it.
-            bitrateLadder.update(smoothedBitrate, SystemClock.elapsedRealtime());
+            bitrateLadder.update(latestBudgetBps, SystemClock.elapsedRealtime());
         }
     }
 
@@ -578,19 +509,12 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             pendingPeerRefresh = true;
             pendingKeyFrame = false;
             bitrateLadder.resetFeedback();
-            // 不清空 pendingBitrate：保留最新带宽反馈，让 applyFeedback 基于最新 bps 重新决策
+            latestBudgetBps = -1;
+            pendingBitrate = -1;
         }
     }
 
-    /**
-     * 处理来自 WebRTC / 网络的拥塞控制与关键帧反馈 (在编码线程执行)
-     * 修复要点：
-     * 1. 在反馈入口观察全部样本，编码线程使用同一预算和档位快照
-     * 2. 帧率热更新同步到 Capture（VideoConstraints），不触发 codec reset
-     * 3. targetFps 与 encoderFps 分离，避免热更新污染编码器创建参数
-     * 4. 增强档位切换日志（bps / reason / delta）
-     * 5. 合并 firstFrameRefresh / bootstrapRefresh 的重复 reset
-     */
+    /** Apply cached network budgets on the encoder thread; cadence changes reset the codec once. */
     private void applyFeedback(MediaCodec codec) {
         if (captureControl.isResetRequested()) { return; }
 
@@ -599,7 +523,14 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         boolean peerRefresh;
         BitrateLadder.Level level;
         synchronized (feedbackLock) {
+            // Advance the stability timer using the cached allocation, even when SetRates is silent.
+            // Explicit zero or a peer reset invalidates it; the encoder target still never exceeds the raw budget.
+            boolean tierChanged = latestBudgetBps > 0
+                    && bitrateLadder.update(latestBudgetBps, SystemClock.elapsedRealtime());
             bps = pendingBitrate;
+            if (bps < 0 && tierChanged) {
+                bps = latestBudgetBps;
+            }
             pendingBitrate = -1;
             keyFrame = pendingKeyFrame;
             pendingKeyFrame = false;
@@ -628,7 +559,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             Ln.d("Peer first frame: positive send budget, refreshing capture");
         }
 
-        boolean needResolutionReset = false;
+        boolean needCodecReset = false;
 
         if (bps >= 0) {
             if (firstFrameRefresh || bps == 0) {
@@ -651,25 +582,24 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                         : level.getFps();
                 int targetMaxSize = level.getMaxSize();
 
-                // ============ 分辨率变化：冷重启编码器 ============
-                if (adaptiveMaxSize != targetMaxSize) {
-                    String reason = targetMaxSize > adaptiveMaxSize ? "UPGRADE" : "DOWNGRADE";
+                // Surface-input FPS limits are codec configuration, not a supported setParameters hot update.
+                if (adaptiveMaxSize != targetMaxSize || Float.compare(encoderFps, nextFps) != 0) {
+                    String reason = targetMaxSize > adaptiveMaxSize || nextFps > encoderFps ? "UPGRADE" : "DOWNGRADE";
                     int delta = Math.abs(targetMaxSize - adaptiveMaxSize);
-                    Ln.i("Resolution tier changed: " + adaptiveMaxSize + " -> " + targetMaxSize
+                    Ln.i("Video tier changed: " + adaptiveMaxSize + " -> " + targetMaxSize
                             + ", reason=" + reason
                             + ", delta=" + delta
                             + ", bps=" + bps
                             + ", targetBitrate=" + targetBitrate
-                            + ", targetFps=" + nextFps
+                            + ", fps=" + encoderFps + " -> " + nextFps
                             + ", triggering codec reset.");
                     adaptiveMaxSize = targetMaxSize;
-                    targetFps = nextFps;
                     encoderFps = nextFps;
-                    maxFps = nextFps;
                     videoBitRate = targetBitrate;
-                    needResolutionReset = true;
+                    videoConstraints = videoConstraints.withMaxFps(nextFps);
+                    needCodecReset = true;
                 } else {
-                    // ============ 仅码率 / 帧率变化：热更新 ============
+                    // Only bitrate changes use a codec hot update.
                     if (videoBitRate != targetBitrate) {
                         videoBitRate = targetBitrate;
                         Bundle params = new Bundle();
@@ -677,25 +607,12 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                         codec.setParameters(params);
                         streamer.reportVideoBitrate(videoBitRate);
                     }
-
-                    // 帧率热更新：同步到 Capture 采样层，不重启编码器
-                    if (Float.compare(targetFps, nextFps) != 0) {
-                        targetFps = nextFps;
-                        maxFps = nextFps;
-                        VideoConstraints next = videoConstraints.withMaxFps(nextFps);
-                        if (capture.applyNewVideoConstraints(next)) {
-                            videoConstraints = next;
-                            Ln.d("Dynamic maxFps updated: " + nextFps);
-                        } else {
-                            Ln.w("Capture rejected maxFps update: " + nextFps);
-                        }
-                    }
                 }
             }
         }
 
         // ============ 合并 reset 判断，避免重复 reset ============
-        if (needResolutionReset || firstFrameRefresh || bootstrapRefresh) {
+        if (needCodecReset || firstFrameRefresh || bootstrapRefresh) {
             captureControl.reset(CaptureControl.RESET_REASON_BITRATE_CHANGED);
             synchronized (feedbackLock) { pendingKeyFrame = true; }
             return;

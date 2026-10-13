@@ -58,7 +58,7 @@ public final class BitrateLadder {
         /** 升档防抖：需稳定维持的毫秒数 */
         public long upgradeStableMs = 6000L;
         /** 常规降档防抖：需持续低于阈值的毫秒数（平衡防抖与响应速度） */
-        public long downgradeStableMs = 10000L;
+        public long downgradeStableMs = 3000L;
         /** 严重降档（跨 ≥2 级）的最小冷却间隔 */
         public long severeDowngradeCooldownMs = 1000L;
         /** 档位切换后的最小保持时间：防止短时间内连续切换 */
@@ -167,13 +167,9 @@ public final class BitrateLadder {
         // A clock regression still invalidates observations; zero/peer reset and lower budgets are handled separately.
         if (lastFeedbackMs != Long.MIN_VALUE && nowMs < lastFeedbackMs) {
             resetFeedback();
+            lastChangeMs = Long.MIN_VALUE;
         }
         lastFeedbackMs = nowMs;
-
-        // 最小保持时间：档位切换后的一段时间内不允许再次切换（防止频繁震荡）
-        if (lastChangeMs != Long.MIN_VALUE && (nowMs - lastChangeMs < config.minHoldAfterChangeMs)) {
-            return false;
-        }
 
         int oldLevel = level;
         int newLevel = computeTargetLevel(bps);
@@ -191,6 +187,10 @@ public final class BitrateLadder {
                 upgradeSinceMs = nowMs;
             }
             if (nowMs - upgradeSinceMs < config.upgradeStableMs) {
+                return false;
+            }
+            // Hold and stability run concurrently. Never delay a congestion downgrade with the upgrade hold.
+            if (lastChangeMs != Long.MIN_VALUE && nowMs - lastChangeMs < config.minHoldAfterChangeMs) {
                 return false;
             }
         } else {

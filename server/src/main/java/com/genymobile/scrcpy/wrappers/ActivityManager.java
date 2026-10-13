@@ -156,6 +156,10 @@ public final class ActivityManager {
     }
 
     public void forceStopPackage(String packageName) {
+        Ln.d("forceStopPackage target=" + packageName + " callerPid=" + android.os.Process.myPid());
+        if (Ln.isEnabled(Ln.Level.DEBUG)) {
+            Ln.d(android.util.Log.getStackTraceString(new Throwable("forceStopPackage caller")));
+        }
         try {
             Method method = getForceStopPackageMethod();
             method.invoke(manager, packageName, /* userId */ /* UserHandle.USER_CURRENT */ -2);
