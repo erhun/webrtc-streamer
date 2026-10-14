@@ -330,6 +330,7 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
         ControlMessage msg;
         try {
             msg = controlChannel.recv();
+            Ln.d("Received control message type=" + msg.getType());
         } catch (ControlProtocolException e) {
             Ln.e("Control protocol error", e);
             return false;

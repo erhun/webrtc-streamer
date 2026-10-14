@@ -155,11 +155,22 @@ public final class BitrateLadder {
     }
 
     public synchronized boolean update(int bps) {
-        return update(bps, System.nanoTime() / 1_000_000);
+        return update(bps, bps, System.nanoTime() / 1_000_000, true);
     }
 
     public synchronized boolean update(int bps, long nowMs) {
-        if (bps <= 0) {
+        return update(bps, bps, nowMs, true);
+    }
+
+    /**
+     * @param rawBps        latest allocation; drives downgrades so congestion is answered immediately.
+     * @param smoothedBps   EMA-damped allocation; drives upgrades so a single probe spike cannot promote a tier.
+     * @param freshFeedback true only for a new SetRates event. Cached encoder-thread ticks (false) keep a
+     *                      downgrade responsive but never advance or commit an upgrade window, so silence
+     *                      cannot promote a stale budget.
+     */
+    public synchronized boolean update(int rawBps, int smoothedBps, long nowMs, boolean freshFeedback) {
+        if (rawBps <= 0) {
             resetFeedback();
             return false;
         }
@@ -172,17 +183,23 @@ public final class BitrateLadder {
         lastFeedbackMs = nowMs;
 
         int oldLevel = level;
-        int newLevel = computeTargetLevel(bps);
+        int downgradeTarget = computeDowngradeLevel(rawBps);
+        boolean isDowngrade = downgradeTarget < oldLevel;
+        boolean isSevereDowngrade = isDowngrade && (oldLevel - downgradeTarget) >= 2;
+        // Congestion always outranks a pending upgrade: a lower raw budget cancels the upgrade candidate.
+        boolean isUpgrade = !isDowngrade && computeUpgradeLevel(smoothedBps) > oldLevel;
 
-        boolean isUpgrade = newLevel > oldLevel;
-        boolean isDowngrade = newLevel < oldLevel;
-        boolean isSevereDowngrade = isDowngrade && (oldLevel - newLevel) >= 2;
+        int newLevel = oldLevel;
 
         // ---------- 升级路径 ----------
         if (isUpgrade) {
             downgradeSinceMs = -1;
             targetDowngradeLevel = -1;
 
+            // A cached tick re-feeds a stale budget; it must never accumulate stability or commit an upgrade.
+            if (!freshFeedback) {
+                return false;
+            }
             if (upgradeSinceMs < 0) {
                 upgradeSinceMs = nowMs;
             }
@@ -193,6 +210,7 @@ public final class BitrateLadder {
             if (lastChangeMs != Long.MIN_VALUE && nowMs - lastChangeMs < config.minHoldAfterChangeMs) {
                 return false;
             }
+            newLevel = oldLevel + 1;
         } else {
             upgradeSinceMs = -1;
         }
@@ -200,6 +218,7 @@ public final class BitrateLadder {
         // ---------- 降级路径 ----------
         if (isDowngrade) {
             upgradeSinceMs = -1;
+            newLevel = downgradeTarget;
 
             if (isSevereDowngrade) {
                 // 严重降档：仅受冷却约束，快速响应
@@ -258,20 +277,26 @@ public final class BitrateLadder {
     }
 
     // ==================== 内部工具 ====================
-    private int computeTargetLevel(int bps) {
+    /** Multi-level drop driven by the raw budget so real congestion is answered without smoothing lag. */
+    private int computeDowngradeLevel(int rawBps) {
         int newLevel = level;
-
-        // 降级
-        while (newLevel > 0 && bps < levels[newLevel].bitRate * config.downscaleFactor) {
+        while (newLevel > 0 && rawBps < levels[newLevel].bitRate * config.downscaleFactor) {
             newLevel--;
         }
-        // A lower tier's stability window must never authorize a jump to a higher candidate.
-        // Each successful upgrade resets the timer, so every next tier needs its own stable window.
-        if (newLevel == level && newLevel < levels.length - 1
-                && bps > levels[newLevel + 1].bitRate * config.upscaleFactor) {
-            newLevel++;
-        }
         return newLevel;
+    }
+
+    /**
+     * Single-step promotion driven by the smoothed budget. A lower tier's stability window must never
+     * authorize a jump to a higher candidate: each successful upgrade resets the timer, so every next
+     * tier needs its own stable window.
+     */
+    private int computeUpgradeLevel(int smoothedBps) {
+        if (level < levels.length - 1
+                && smoothedBps > levels[level + 1].bitRate * config.upscaleFactor) {
+            return level + 1;
+        }
+        return level;
     }
 
     private static int clamp(int v, int min, int max) {

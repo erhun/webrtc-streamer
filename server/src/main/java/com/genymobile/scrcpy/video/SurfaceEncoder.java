@@ -77,6 +77,9 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
     private int latestBudgetBps = -1;
+    /** EMA of the budget, used only to gate upgrades; the applied encoder target still tracks the raw budget. */
+    private int smoothedBudgetBps = -1;
+    private static final double SMOOTHING_ALPHA = 0.25; // 新值权重 25%，历史值权重 75%：阻尼单次探测尖峰引发的升档
     private final VideoPipelineStats pipelineStats = new VideoPipelineStats();
     private boolean pendingKeyFrame;
     private boolean pendingPeerRefresh;
@@ -492,9 +495,15 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         synchronized (feedbackLock) {
             pendingBitrate = Math.max(0, bps);
             latestBudgetBps = pendingBitrate;
+            if (pendingBitrate <= 0 || smoothedBudgetBps < 0) {
+                // A pause or the first sample seeds the EMA; a recovery must not inherit a stale high value.
+                smoothedBudgetBps = pendingBitrate;
+            } else {
+                smoothedBudgetBps = (int) (SMOOTHING_ALPHA * pendingBitrate + (1 - SMOOTHING_ALPHA) * smoothedBudgetBps);
+            }
             // Observe every feedback event, even if codec reset coalesces multiple callbacks.
             // Otherwise a short budget dip/zero can disappear before applyFeedback sees it.
-            bitrateLadder.update(latestBudgetBps, SystemClock.elapsedRealtime());
+            bitrateLadder.update(latestBudgetBps, smoothedBudgetBps, SystemClock.elapsedRealtime(), true);
         }
     }
 
@@ -510,6 +519,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             pendingKeyFrame = false;
             bitrateLadder.resetFeedback();
             latestBudgetBps = -1;
+            smoothedBudgetBps = -1;
             pendingBitrate = -1;
         }
     }
@@ -523,10 +533,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         boolean peerRefresh;
         BitrateLadder.Level level;
         synchronized (feedbackLock) {
-            // Advance the stability timer using the cached allocation, even when SetRates is silent.
-            // Explicit zero or a peer reset invalidates it; the encoder target still never exceeds the raw budget.
+            // Advance downgrade debounce with the cached allocation so congestion still resolves during SetRates
+            // gaps, but a cached tick is not a fresh observation and must never commit an upgrade (freshFeedback=false).
             boolean tierChanged = latestBudgetBps > 0
-                    && bitrateLadder.update(latestBudgetBps, SystemClock.elapsedRealtime());
+                    && bitrateLadder.update(latestBudgetBps, smoothedBudgetBps, SystemClock.elapsedRealtime(), false);
             bps = pendingBitrate;
             if (bps < 0 && tierChanged) {
                 bps = latestBudgetBps;

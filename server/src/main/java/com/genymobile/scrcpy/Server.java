@@ -165,6 +165,7 @@ public final class Server {
             Controller controller = null;
             ControlManager controlManager = null;
             AtomicReference<DataChannelInputStream> controllerInputRef = new AtomicReference<>();
+            AtomicReference<DataChannelOutputStream> controlOutputRef = new AtomicReference<>();
 
             if (control) {
                 ControlChannel controlChannel = null;
@@ -181,6 +182,7 @@ public final class Server {
                         }
                     });
                     DataChannelOutputStream dataOut = new DataChannelOutputStream(bridge);
+                    controlOutputRef.set(dataOut);
                     controlChannel = new ControlChannel(controllerInput, dataOut);
                 }
                 if (controlChannel != null) {
@@ -265,7 +267,7 @@ public final class Server {
             }
 
             if (bridge != null) {
-                signalServer = startSignalServer(bridge, videoSink, audioSink, bitrateAggregator, controlManager, options, session);
+                signalServer = startSignalServer(bridge, videoSink, audioSink, bitrateAggregator, controlManager, controlOutputRef, options, session);
             }
             Completion completion = new Completion(asyncProcessors.size());
             for (AsyncProcessor asyncProcessor : asyncProcessors) {
@@ -350,6 +352,7 @@ public final class Server {
 
     private static SignalServer startSignalServer(NativeEncoderBridge primaryBridge, PacketSink videoSink,
             PacketSink audioSink, BitrateAggregator bitrateAggregator, ControlManager controlManager,
+            AtomicReference<DataChannelOutputStream> controlOutputRef,
             Options options, Session session) {
         int maxPeers = 10;
         Map<String, NativeEncoderBridge> clientBridges = new ConcurrentHashMap<>();
@@ -419,6 +422,11 @@ public final class Server {
                 }
                 if (controlManager != null) {
                     Ln.i("Setting up control channel for client: " + clientId);
+                    DataChannelOutputStream controlOutput = controlOutputRef.get();
+                    if (controlOutput != null) {
+                        controlOutput.setBridge(bridge);
+                        Ln.i("Updated control output bridge for client: " + clientId);
+                    }
                     bridge.setDataCallback(data -> {
                         Ln.d("Received control data from client " + clientId + ": " + data.length + " bytes");
                         controlManager.handleControlData(clientId, data);

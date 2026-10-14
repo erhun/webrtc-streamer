@@ -5,9 +5,13 @@ import java.io.OutputStream;
 
 public class DataChannelOutputStream extends OutputStream {
 
-    private final NativeEncoderBridge bridge;
+    private volatile NativeEncoderBridge bridge;
 
     public DataChannelOutputStream(NativeEncoderBridge bridge) {
+        this.bridge = bridge;
+    }
+
+    public void setBridge(NativeEncoderBridge bridge) {
         this.bridge = bridge;
     }
 
@@ -21,6 +25,7 @@ public class DataChannelOutputStream extends OutputStream {
     public void write(byte[] b, int off, int len) throws IOException {
         byte[] data = new byte[len];
         System.arraycopy(b, off, data, 0, len);
-        if (!bridge.sendData(data)) { throw new IOException("Control channel closed or backpressured"); }
+        NativeEncoderBridge current = bridge;
+        if (current == null || !current.sendData(data)) { throw new IOException("Control channel closed or backpressured"); }
     }
 }

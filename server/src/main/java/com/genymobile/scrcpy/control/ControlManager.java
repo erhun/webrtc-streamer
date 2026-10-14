@@ -60,10 +60,12 @@ public final class ControlManager {
     }
 
     public void handleControlData(String clientId, byte[] data) {
+        Ln.d("handleControlData called with " + data.length + " bytes from client " + clientId);
         String text = new String(data, StandardCharsets.UTF_8);
         try {
             JSONObject msg = new JSONObject(text);
             String type = msg.optString("type");
+            Ln.d("JSON control message received: type=" + type);
             if ("REQUEST_CONTROL".equals(type)) {
                 requestControl(clientId);
                 broadcastControlState();
@@ -74,7 +76,7 @@ public final class ControlManager {
                 return;
             }
         } catch (JSONException e) {
-            // Not a JSON message, treat as regular control data
+            Ln.d("Not a JSON message, forwarding as binary control data");
         }
         forwardControlMessage(clientId, data);
     }
@@ -112,16 +114,24 @@ public final class ControlManager {
         ControlForwarder target;
         synchronized (lock) {
             if (currentController == null) {
+                if (!forwarders.containsKey(clientId)) {
+                    Ln.d("Ignoring control data from unregistered client " + clientId);
+                    return;
+                }
                 currentController = clientId;
                 Ln.i("Auto-granted control to client " + clientId);
                 broadcastControlState();
             } else if (!clientId.equals(currentController)) {
+                Ln.d("Rejected control data from non-controller client " + clientId);
                 return;
             }
             target = controller;
         }
         if (target != null) {
+            Ln.d("Forwarding " + data.length + " bytes to controller");
             target.forward(data);
+        } else {
+            Ln.w("Controller is null, cannot forward control data");
         }
     }
 

@@ -45,20 +45,37 @@ public final class FramePipelineTest {
 
     private static void testCachedBudgetRecovery() {
         BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
-        // One external allocation, followed by encoder-thread clock ticks with that same cached budget.
-        check(!ladder.update(8_000_000, 0), "Start candidate");
-        check(ladder.update(8_000_000, 6000), "Cached allocation completes the first window");
-        check(!ladder.update(8_000_000, 6001), "Next candidate begins during hold");
-        check(!ladder.update(8_000_000, 12000), "No inherited stability");
-        check(ladder.update(8_000_000, 12001), "Hold must overlap stability, not add another five seconds");
-        check(ladder.update(100_000, 13001), "Upgrade hold must not block severe congestion downgrade");
-        check(ladder.getCurrentLevelIndex() == 0, "Severe congestion reaches the lowest tier");
+        // One external allocation, followed by encoder-thread clock ticks re-feeding that same cached budget.
+        check(!ladder.update(8_000_000, 8_000_000, 0, true), "Fresh allocation starts a candidate");
+        check(!ladder.update(8_000_000, 8_000_000, 6000, false), "A cached tick must not complete the upgrade window");
+        check(!ladder.update(8_000_000, 8_000_000, 30_000, false), "Prolonged silence never promotes a stale budget");
+        check(ladder.update(8_000_000, 8_000_000, 30_100, true), "A fresh allocation spanning the window upgrades");
+        check(ladder.getCurrentLevelIndex() == 1, "Upgrade is single-step");
+
+        // Congestion must stay responsive even when it arrives on a cached (non-fresh) encoder tick.
+        BitrateLadder congested = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 3);
+        check(congested.update(100_000, 100_000, 5000, false), "Severe congestion downgrades without a fresh event");
+        check(congested.getCurrentLevelIndex() == 0, "Severe congestion reaches the lowest tier");
 
         BitrateLadder paused = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
         paused.update(8_000_000, 0);
         paused.update(0, 5000);
         check(!paused.update(8_000_000, 6000), "Raw zero cancels the old candidate");
         check(paused.update(8_000_000, 12000), "Resume needs its own complete window");
+    }
+
+    private static void testSmoothedSpikeDoesNotUpgrade() {
+        // Reproduces the production limit cycle: WebRTC BWE swings 2.6M <-> 6.8M as the encoder loads the pipe.
+        // Upgrades read the EMA-smoothed budget, so a raw probe spike the smoothing has not confirmed cannot promote.
+        BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 1); // 960p; upgrade needs smoothed > 4.48M
+        for (long t = 0; t <= 12_000; t += 1000) {
+            check(!ladder.update(6_800_000, 3_000_000, t, true), "A damped smoothed budget must not promote a tier");
+        }
+        check(ladder.getCurrentLevelIndex() == 1, "Raw spike alone cannot upgrade while the smoothed budget stays low");
+        // A genuinely sustained high smoothed budget across fresh events still upgrades one step.
+        check(!ladder.update(6_800_000, 6_800_000, 13_000, true), "First confirmed high sample starts a new window");
+        check(ladder.update(6_800_000, 6_800_000, 19_000, true), "Sustained high smoothed budget upgrades after the window");
+        check(ladder.getCurrentLevelIndex() == 2, "Upgrade is single-step");
     }
 
     private static void testPeerBudgetLifetime() {
@@ -107,8 +124,9 @@ public final class FramePipelineTest {
     public static void main(String[] args) {
         testRawFrameCadence();
         testCachedBudgetRecovery();
+        testSmoothedSpikeDoesNotUpgrade();
         testPeerBudgetLifetime();
         testAudioEntryPoints();
-        System.out.println("Frame pipeline regressions passed (4 scenario groups)");
+        System.out.println("Frame pipeline regressions passed (5 scenario groups)");
     }
 }
