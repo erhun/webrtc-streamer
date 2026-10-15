@@ -42,7 +42,6 @@ pathlib.Path(args[args.index('-o') + 1]).write_bytes(b'fake build output')
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     compiled = {Path(args[args.index('-c') + 1]).name for args in calls if '-c' in args}
     assert compiled == {path.name for path in (root / 'server/src/main/cpp').glob('*.cc')}
-    assert 'scrcpy_opus_audio_encoder.cc' not in compiled
     assert '-fuse-ld=/test/custom-ld' in calls[-1]
     assert '-Wl,--no-undefined' in calls[-1]
     manifest = json.loads((server / 'native-build.json').read_text())

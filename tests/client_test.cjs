@@ -37,7 +37,7 @@ class Peer {
   remoteDescription = null; candidates = []; offers = []; signalingState = 'stable'; connectionState = 'new';
   constructor(config) { Peer.last = this; this.config = config; }
   createDataChannel() { return new Channel(); }
-  addTransceiver() {}
+  addTransceiver() { return { receiver: {} }; }
   async createOffer(options) { this.offers.push(options); return { type: 'offer', sdp: 'offer' }; }
   async setLocalDescription(value) { this.signalingState = value.type === 'rollback' ? 'stable' : 'have-local-offer'; }
   async setRemoteDescription(value) { await tick(); this.remoteDescription = value; this.signalingState = 'stable'; }
@@ -66,167 +66,118 @@ function makeClient() {
     onVideoTrack() {}, onDataChannelOpen() {} });
   return { client, states, errors, diagnostics, events };
 }
+function ready(ws, resumed = false) {
+  ws.receive({ type: 'ready', protocolVersion: 3, clientId: 'd'.repeat(32), roomId: 'default', resumeToken: 'b'.repeat(64), resumed });
+}
 async function connect(client) {
   await client.connect(options);
   const ws = Socket.last, pc = Peer.last;
-  ws.onopen(); assert.equal(ws.messages[0].type, 'auth');
-  ws.receive({ type: 'ready', resumeToken: 'b'.repeat(64), resumed: false }); await settle();
+  ws.onopen(); assert.equal(ws.messages[0].type, 'join');
+  ready(ws); await settle();
   return { ws, pc };
 }
 async function answer(ws, pc) {
   ws.receive({ type: 'answer', sdp: 'answer' }); await settle(); pc.state('connected');
 }
 (async () => {
-  const { client, states, diagnostics } = makeClient();
-  const { ws, pc } = await connect(client);
-  assert.deepEqual(ws.messages.map(x => x.type), ['auth', 'offer']);
+  const r = makeClient(); const { client, states } = r;
+  const first = await connect(client); const { pc, ws } = first;
+  assert.deepEqual(ws.messages.map(x => x.type), ['join', 'offer']);
   ws.receive({ type: 'ice', sdpMid: '0', sdpMLineIndex: 0, candidate: 'early' });
-  ws.receive({ type: 'answer', sdp: 'answer' });
-  ws.receive({ type: 'ice', sdpMid: '0', sdpMLineIndex: 0, candidate: 'later' });
-  await settle(); pc.state('connected');
-  assert.deepEqual(pc.candidates.map(x => x.candidate), ['early', 'later']);
-  assert.ok(diagnostics.some(s => s.includes('Answer 已应用')));
+  await answer(ws, pc);
+  assert.deepEqual(pc.candidates.map(x => x.candidate), ['early']);
+  assert.equal(states.at(-1), 'connected');
+  assert.ok(![...storage.values()][0].includes(options.sessionToken));
+
+  // A media outage reuses the same peer and serializes ICE restart offers.
+  pc.state('disconnected'); await advance(6000);
+  assert.equal(states.at(-1), 'reconnecting');
+  assert.equal(client.peerConnection, pc);
+  assert.equal(pc.offers.at(-1).iceRestart, true);
+  const pending = pc.offers.length; await advance(6000);
+  assert.equal(pc.offers.length, pending);
+  await answer(ws, pc);
+
+  // Signal-only loss must retain healthy video. Resume requires its own secret and stable client id.
+  const offersBeforeSignalLoss = pc.offers.length;
+  ws.drop(); assert.equal(states.at(-1), 'reconnecting'); assert.equal(client.peerConnection, pc);
+  await advance(3000);
+  const resumed = Socket.last; resumed.onopen();
+  assert.equal(resumed.messages[0].type, 'resume');
+  assert.equal(resumed.messages[0].token, 'b'.repeat(64));
+  assert.equal(resumed.messages[0].clientId, 'd'.repeat(32));
+  assert.equal(resumed.messages[0].peerId, ws.messages[0].peerId);
+  ready(resumed, true); await settle();
+  assert.equal(states.at(-1), 'connected');
+  assert.equal(pc.offers.length, offersBeforeSignalLoss); // No gratuitous renegotiation for healthy media.
+  resumed.receive({ type: 'answer', sdp: 'cached-answer' }); await settle();
+  assert.equal(pc.remoteDescription.sdp, 'answer'); // Duplicate cached answer is harmless.
+  const diagnosticsBefore = r.diagnostics.length;
+  ws.onclose({ code: 1008, reason: 'LOGIN_TOKEN_INVALID' });
+  assert.equal(r.diagnostics.length, diagnosticsBefore);
+
+  // Pending answer survives socket replacement instead of racing a new offer.
+  pc.state('disconnected'); await advance(6000);
+  const offerCount = pc.offers.length;
+  resumed.drop(); await advance(3000);
+  const pendingSocket = Socket.last; pendingSocket.onopen(); ready(pendingSocket, true); await settle();
+  assert.equal(pc.offers.length, offerCount);
+  await answer(pendingSocket, pc); assert.equal(states.at(-1), 'connected');
+
+  // Heartbeat blackhole is recovered using the same bounded path.
+  pendingSocket.autoPong = false; await advance(8000);
+  assert.equal(states.at(-1), 'reconnecting'); assert.equal(client.peerConnection, pc);
+  await advance(3000); const live = Socket.last; live.onopen(); ready(live, true); await settle();
   assert.equal(states.at(-1), 'connected');
 
-  // A transient failure must not close either transport. Restart ICE on the same PC.
-  pc.state('disconnected'); assert.equal(states.at(-1), 'reconnecting');
-  pc.state('failed'); await advance(6000);
-  assert.equal(client.peerConnection, pc); assert.equal(ws.readyState, Socket.OPEN);
-  assert.equal(pc.offers.at(-1).iceRestart, true);
-  const offerCount = pc.offers.length;
-  await advance(6000); assert.equal(pc.offers.length, offerCount); // Delayed answer must not race a replacement offer.
-  await answer(ws, pc); assert.equal(states.at(-1), 'connected');
-
-  // Resume a lost signaling socket using a separate secret, never replay the login token.
-  ws.drop(); assert.equal(states.at(-1), 'reconnecting');
-  assert.equal(client.peerConnection, pc);
-  await advance(3000);
-  const resumed = Socket.last; assert.notEqual(resumed, ws);
-  resumed.onopen(); assert.equal(resumed.messages[0].type, 'resume');
-  assert.equal(resumed.messages[0].token, 'b'.repeat(64));
-  assert.equal(resumed.messages[0].peerId, ws.messages[0].peerId);
-  resumed.receive({ type: 'ready', resumeToken: 'b'.repeat(64), resumed: true }); await settle();
-  assert.equal(pc.offers.at(-1).iceRestart, true);
-  ws.receive({ type: 'answer', sdp: 'stale' }); ws.onclose({ code: 1008 });
-  await answer(resumed, pc); assert.equal(states.at(-1), 'connected');
-
-  // Detect a half-open socket without a browser close event, and resume it too.
-  resumed.autoPong = false;
-  await advance(8000); assert.equal(states.at(-1), 'reconnecting');
-  assert.equal(client.peerConnection, pc);
-  await advance(3000);
-  const third = Socket.last; assert.notEqual(third, resumed);
-  third.onopen(); third.receive({ type: 'ready', resumeToken: 'b'.repeat(64), resumed: true });
-  await settle(); await answer(third, pc); assert.equal(states.at(-1), 'connected');
-
-  // Backpressure sheds move events but queues DOWN/UP in order and keeps video alive.
-  const channel = client.dataChannel;
-  channel.bufferedAmount = 262144;
+  // Backpressure drops replaceable motion while preserving key ordering.
+  const channel = client.dataChannel; channel.bufferedAmount = 262144;
   assert.equal(client.sendControlMessage(new Uint8Array([2, 2])), false);
   assert.equal(client.sendControlMessage(new Uint8Array([0, 0])), true);
   assert.equal(client.sendControlMessage(new Uint8Array([0, 1])), true);
-  assert.equal(client.peerConnection, pc); assert.equal(channel.sent.length, 0);
   channel.bufferedAmount = 0; channel.onbufferedamountlow();
   assert.deepEqual(channel.sent, [[0, 0], [0, 1]]);
 
-  // Relay validation and stale callbacks remain safe.
-  const oldDiagnosticCount = diagnostics.length;
-  await client.connect({ ...options, iceTransportPolicy: 'relay' });
-  assert.equal(client.peerConnection, null); assert.equal(states.at(-1), 'failed');
-  pc.oniceconnectionstatechange(); assert.equal(diagnostics.length, oldDiagnosticCount);
-  assert.equal(third.messages.at(-1).type, 'bye');
-  await client.connect({ ...options, iceTransportPolicy: 'relay', iceServers: [{ urls: 'turn:example.test:3478' }] });
-  assert.equal(Peer.last.config.iceTransportPolicy, 'relay');
-  client.close(); assert.equal(timers.size, 0);
-
-  // Permanent loss is bounded, reports the actual error last, and cancels all timers.
-  const expired = makeClient(); const e = await connect(expired.client); await answer(e.ws, e.pc);
-  e.pc.state('disconnected');
-  await advance(30000);
-  assert.equal(expired.client.peerConnection, null);
-  assert.match(expired.events.at(-1), /网络恢复超时/);
-  assert.equal(timers.size, 0);
-
-  // Authentication rejection is terminal, not an infinite reconnect loop.
-  const rejected = makeClient(); const r = await connect(rejected.client); await answer(r.ws, r.pc);
-  r.ws.drop(1008); assert.equal(rejected.client.peerConnection, null);
-  assert.match(rejected.errors.at(-1), /服务端拒绝认证/);
-  assert.equal(timers.size, 0);
-
-  // No ready response means no resume secret; do not replay a consumed login token.
-  const unauthenticated = makeClient(); await unauthenticated.client.connect(options);
-  await advance(5000); assert.equal(unauthenticated.client.peerConnection, null);
-  assert.equal(timers.size, 0);
-  // A page reload keeps the tab's resume secret, but must create a new native peer.
-  const beforeReload = makeClient();
-  const first = await connect(beforeReload.client); await answer(first.ws, first.pc);
-  assert.equal(storage.size, 1);
-  assert.ok(![...storage.values()][0].includes(options.sessionToken));
-  beforeReload.client.suspend();
-  assert.notEqual(first.ws.messages.at(-1).type, 'bye');
-  assert.equal(timers.size, 0); assert.equal(storage.size, 1);
-  const afterReload = makeClient();
-  await afterReload.client.connect({ ...options, sessionToken: '' });
-  const reloadSocket = Socket.last, reloadPeer = Peer.last;
-  reloadSocket.onopen();
+  // Reload persists only the recovery secret, changes media identity, and keeps the admitted peer identity.
+  client.suspend(); assert.equal(storage.size, 1); assert.equal(timers.size, 0);
+  const reload = makeClient(); await reload.client.connect({ ...options, sessionToken: '' });
+  const reloadSocket = Socket.last; reloadSocket.onopen();
   assert.equal(reloadSocket.messages[0].type, 'resume');
-  assert.notEqual(reloadSocket.messages[0].peerId, first.ws.messages[0].peerId);
-  reloadSocket.receive({ type: 'ready', resumed: true, resumeToken: 'b'.repeat(64), peerId: reloadSocket.messages[0].peerId });
-  await settle(); await answer(reloadSocket, reloadPeer);
-  assert.equal(afterReload.states.at(-1), 'connected');
-  afterReload.client.close();
+  assert.equal(reloadSocket.messages[0].clientId, 'd'.repeat(32));
+  assert.notEqual(reloadSocket.messages[0].peerId, ws.messages[0].peerId);
+  ready(reloadSocket, true); await settle(); await answer(reloadSocket, Peer.last);
+  reload.client.close(); assert.equal(storage.size, 0); assert.equal(timers.size, 0);
   assert.equal(reloadSocket.messages.at(-1).type, 'bye');
-  assert.equal(storage.size, 0); assert.equal(timers.size, 0);
 
-  // Missing peer-reset support must be reported, rather than authenticating then black-screening.
-  const legacy = makeClient(); const legacyFirst = await connect(legacy.client); await answer(legacyFirst.ws, legacyFirst.pc);
-  legacy.client.suspend();
-  const reloadLegacy = makeClient(); await reloadLegacy.client.connect({ ...options, sessionToken: '' });
-  const legacySocket = Socket.last; legacySocket.onopen();
-  legacySocket.receive({ type: 'ready', resumed: true, resumeToken: 'b'.repeat(64) }); await settle();
-  assert.match(reloadLegacy.errors.at(-1), /服务端不支持页面刷新恢复/);
-  assert.equal(timers.size, 0); assert.equal(storage.size, 0);
+  // Explicit new credentials do not get silently replaced by a cached recovery attempt.
+  const old = makeClient(); await connect(old.client); old.client.suspend();
+  const fresh = makeClient(); await fresh.client.connect({ ...options, sessionToken: 'c'.repeat(32) });
+  Socket.last.onopen(); assert.equal(Socket.last.messages[0].type, 'join');
+  fresh.client.close(); storage.clear();
 
-  // Expired tab credentials are not used, and cannot make a consumed token reusable.
-  const stale = makeClient(); const staleFirst = await connect(stale.client); await answer(staleFirst.ws, staleFirst.pc);
-  stale.client.suspend(); await advance(45001);
-  const expiredReload = makeClient(); await expiredReload.client.connect({ ...options, sessionToken: '' });
-  assert.equal(expiredReload.client.peerConnection, null); assert.equal(storage.size, 0);
-
-  // New server session: an explicitly entered login token gets one fallback attempt.
-  const oldSession = makeClient(); const old = await connect(oldSession.client); await answer(old.ws, old.pc);
-  oldSession.client.suspend();
-  const newSession = makeClient(); await newSession.client.connect({ ...options, sessionToken: 'c'.repeat(32) });
-  const rejectedResume = Socket.last; rejectedResume.onopen(); rejectedResume.drop(1008);
-  const authSocket = Socket.last; assert.notEqual(authSocket, rejectedResume);
-  authSocket.onopen(); assert.equal(authSocket.messages[0].type, 'auth');
-  assert.equal(authSocket.messages[0].token, 'c'.repeat(32));
-  authSocket.drop(1008); assert.equal(newSession.client.peerConnection, null);
+  // Recovery stays bounded even when replacement sockets never authenticate.
+  const expired = makeClient(); const e = await connect(expired.client); await answer(e.ws, e.pc);
+  e.ws.drop(); await advance(30000);
+  assert.equal(expired.client.peerConnection, null);
+  assert.equal(expired.states.at(-1), 'failed'); assert.match(expired.errors.at(-1), /恢复超时/);
   assert.equal(timers.size, 0);
 
-  // Protocol rejection must not silently downgrade resume to consumed login-token auth.
-  const protocolOld = makeClient(); const po = await connect(protocolOld.client); await answer(po.ws, po.pc);
-  protocolOld.client.suspend();
-  const protocolReload = makeClient(); await protocolReload.client.connect(options);
-  const protocolSocket = Socket.last; protocolSocket.onopen();
-  protocolSocket.drop(1008, 'Invalid peer identity');
-  assert.equal(Socket.last, protocolSocket);
-  assert.match(protocolReload.errors.at(-1), /页面连接标识无效/);
-  assert.ok(protocolReload.diagnostics.some(line => line.includes('reason=Invalid peer identity')));
-  assert.equal(timers.size, 0);
+  // Production browser entry requires WSS; localhost remains available for adb/debugging.
+  const invalid = makeClient(); await invalid.client.connect({ ...options, signalingUrl: 'ws://example.com/signal' });
+  assert.equal(invalid.client.peerConnection, null); assert.match(invalid.errors.at(-1), /wss/);
+  await invalid.client.connect({ ...options, iceTransportPolicy: 'relay' });
+  assert.equal(invalid.client.peerConnection, null);
+  const incompatible = makeClient(); await incompatible.client.connect(options); Socket.last.onopen();
+  Socket.last.receive({ type: 'ready', protocolVersion: 2 }); await settle();
+  assert.equal(incompatible.client.peerConnection, null); assert.match(incompatible.errors.at(-1), /协议不兼容/);
 
-  const usedToken = makeClient(); await usedToken.client.connect(options);
-  Socket.last.onopen(); Socket.last.drop(1008, 'LOGIN_TOKEN_USED');
-  assert.match(usedToken.errors.at(-1), /首次登录凭证已使用/);
-  assert.ok(usedToken.diagnostics.some(line => line.includes('认证方式=auth')));
-  assert.ok(!usedToken.diagnostics.some(line => line.includes(options.sessionToken)));
-  assert.equal(timers.size, 0);
-
-  // Storage policy failures do not break first-time connections or leak timers.
+  // Storage restrictions cannot break ordinary in-memory reconnection.
   global.sessionStorage = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); },
     removeItem() { throw new Error('blocked'); } };
-  const privateTab = makeClient(); const privateConnection = await connect(privateTab.client);
-  await answer(privateConnection.ws, privateConnection.pc); assert.equal(privateTab.states.at(-1), 'connected');
-  privateTab.client.close(); assert.equal(timers.size, 0);
-  console.log('Browser signaling, weak-network recovery and backpressure regressions passed');
+  const privateMode = makeClient(); const p = await connect(privateMode.client); await answer(p.ws, p.pc);
+  p.ws.drop(); await advance(3000); const privateSocket = Socket.last; privateSocket.onopen();
+  assert.equal(privateSocket.messages[0].type, 'resume'); ready(privateSocket, true); await settle();
+  assert.equal(privateMode.client.peerConnection, p.pc); privateMode.client.close();
+  assert.equal(timers.size, 0);
+  console.log('PASS client v3: negotiation, bounded recovery, reload identity, input backpressure, protocol and transport policy');
 })().catch(error => { console.error(error); process.exitCode = 1; });

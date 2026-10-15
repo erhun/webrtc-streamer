@@ -1,8 +1,8 @@
-import { saveResumeSession, forgetResumeSession, newPeerId } from './session-resume';
+import { saveResumeSession, readResumeSession, forgetResumeSession, newPeerId } from './session-resume';
 import { configureVideoLatency } from './receiver-latency';
 import { MessageType, MotionEventAction } from './control-message';
 interface IceServer { urls: string; username?: string; credential?: string; }
-export interface ConnectOptions { signalingUrl: string; sessionToken: string; iceServers: IceServer[]; iceTransportPolicy?: RTCIceTransportPolicy; }
+export interface ConnectOptions { signalingUrl: string; sessionToken: string; iceServers: IceServer[]; iceTransportPolicy?: RTCIceTransportPolicy; room?: string; }
 export type ClientState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'closed';
 export interface ScrcpyClientCallbacks {
   onStateChange: (state: ClientState) => void;
@@ -44,14 +44,17 @@ export class ScrcpyClient {
   private resumeSecret = '';
   private authenticatedSocket = false;
   private peerId = '';
+  private clientId = '';
+  private room = 'default';
   constructor(private readonly callbacks: ScrcpyClientCallbacks) { }
   async connect(options: ConnectOptions): Promise<void> {
+    const cached = !this.pc && !options.sessionToken ? readResumeSession(new URL(options.signalingUrl).href) : null;
     this.close();
     const invalid = (message: string): void => {
       this.callbacks.onStateChange('failed'); this.callbacks.onError(message);
     };
     const url = new URL(options.signalingUrl);
-    if (url.protocol !== 'wss:' && !(url.protocol === 'ws:')) {
+    if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) {
       invalid('远程连接需要 wss:// 地址'); return;
     }
     if (options.iceTransportPolicy === 'relay' && !options.iceServers.some(server => /^turns?:/i.test(server.urls))) {
@@ -65,7 +68,7 @@ export class ScrcpyClient {
     const trace = (stage: string): void => {
       if (current()) { this.callbacks.onDiagnostic?.(`${Math.round(performance.now() - started)}ms ${stage}`); }
     };
-    trace('H5 recovery build: reload-diagnostics-v1');
+    trace('H5 recovery build: session-v3');
     trace('连接开始');
     const fail = (message: string): void => {
       if (!current()) { return; }
@@ -75,15 +78,18 @@ export class ScrcpyClient {
     this.timeout = setTimeout(() => fail('连接超时，请申请新会话后重试'), 30000);
     this.peerId = newPeerId();
     this.resumeUrl = url.href;
-    this.resumeSecret = options.sessionToken;
+    this.resumeSecret = cached?.token ?? '';
+    this.clientId = cached?.clientId ?? newPeerId();
+    this.room = options.room ?? cached?.room ?? 'default';
     const remember = (): void => {
-      if (options.sessionToken) { saveResumeSession(url.href, options.sessionToken); }
+      if (this.resumeSecret) { saveResumeSession(url.href, this.resumeSecret, this.clientId, this.room); }
     };
     let ready = false;
     let recovering = false;
     let offering = false;
     let awaitingAnswer = false;
     let offerSentAt = -Infinity;
+    let offerWasSent = false;
     let pendingIce: RTCIceCandidateInit[] = [];
     let messages = Promise.resolve();
     const recovered = (): void => {
@@ -110,10 +116,12 @@ export class ScrcpyClient {
         const description = await pc.createOffer({ iceRestart: restart });
         if (!active()) { return; }
         awaitingAnswer = true;
+        offerWasSent = false;
         offerSentAt = performance.now();
         await pc.setLocalDescription(description);
         if (!active()) { return; }
         socket.send(JSON.stringify({ type: 'offer', sdp: description.sdp ?? '' }));
+        offerWasSent = true;
         trace(restart ? 'ICE restart Offer 已发送' : 'Offer 已发送');
       } catch {
         if (active()) { fail('信令协商失败'); }
@@ -148,27 +156,15 @@ export class ScrcpyClient {
     const videoTransceiver = pc.addTransceiver('video', { direction: 'recvonly' });
     const audioTransceiver = pc.addTransceiver('audio', { direction: 'recvonly' });
 
-    if (videoTransceiver.receiver && 'playoutDelayHint' in videoTransceiver.receiver) {
-      videoTransceiver.receiver.playoutDelayHint = 0;
-    }
-    if (audioTransceiver.receiver && 'playoutDelayHint' in audioTransceiver.receiver) {
-      audioTransceiver.receiver.playoutDelayHint = 0; // 关键：音频也必须设为 0，防止 A/V Sync 拉高视频延迟
-    }
-
+    trace(configureVideoLatency(videoTransceiver.receiver));
+    // Keep audio under the browser's own audio-specific buffering policy.
+    void audioTransceiver;
     const stream = new MediaStream();
     pc.ontrack = (event) => {
-//       if (current()) {
-//         if (event.track.kind === 'video') { trace(configureVideoLatency(event.receiver)); }
-//         trace(`收到 ${event.track.kind} 轨道（尚非首帧）`);
-//         stream.addTrack(event.track); this.callbacks.onVideoTrack(stream);
-//       }
-        if (current()) {
-            // 移除 kind === 'video' 判断，对 audio 和 video receiver 均进行配置
-            trace(configureVideoLatency(event.receiver));
-            trace(`收到 ${event.track.kind} 轨道（尚非首帧）`);
-            stream.addTrack(event.track);
-            this.callbacks.onVideoTrack(stream);
-        }
+      if (!current()) return;
+      if (event.track.kind === 'video') trace(configureVideoLatency(event.receiver));
+      trace(`收到 ${event.track.kind} 轨道（尚非首帧）`);
+      stream.addTrack(event.track); this.callbacks.onVideoTrack(stream);
     };
     pc.onicecandidate = (event) => {
       if (current() && ready && this.ws?.readyState === WebSocket.OPEN && event.candidate) {
@@ -202,14 +198,18 @@ export class ScrcpyClient {
         this.ws = null;
         ready = false;
         ws.close();
-        fail(`${reason}，请申请新会话后连接`);
+        if (!this.resumeSecret) { fail(`${reason}，未取得恢复凭证`); return; }
+        if (!offerWasSent) awaitingAnswer = false;
+        recover(reason);
       };
       // Covers both opening and authentication, including a silently blackholed socket.
       this.socketTimeout = setTimeout(() => lost('信令连接超时'), 5000);
       ws.onopen = () => {
         if (!active()) { return; }
-        trace(`WebSocket 已打开，发送 join 认证`);
-        ws.send(JSON.stringify({ type: 'join', token: options.sessionToken, room: 'default', clientId: this.peerId }));
+        const resuming = Boolean(this.resumeSecret);
+        trace(`WebSocket 已打开，发送 ${resuming ? 'resume' : 'join'} 认证`);
+        ws.send(JSON.stringify({ type: resuming ? 'resume' : 'join', token: this.resumeSecret || options.sessionToken,
+          room: this.room, clientId: this.clientId, peerId: this.peerId }));
       };
       ws.onmessage = (event) => {
         messages = messages.then(async () => {
@@ -217,6 +217,12 @@ export class ScrcpyClient {
           const msg = JSON.parse(event.data as string);
           if (msg.type === 'ready' && !ready) {
             clearSocketTimeout();
+            if (msg.protocolVersion !== 3 || typeof msg.resumeToken !== 'string' || !/^[a-f0-9]{64}$/i.test(msg.resumeToken)
+                || typeof msg.clientId !== 'string' || !/^[a-f0-9]{32}$/i.test(msg.clientId)) {
+              fail('服务端恢复协议不兼容，请同步升级 H5 和服务端'); return;
+            }
+            this.resumeSecret = msg.resumeToken;
+            this.clientId = msg.clientId;
             this.authenticatedSocket = true;
             remember();
             ready = true;
@@ -226,16 +232,17 @@ export class ScrcpyClient {
               ws.send(JSON.stringify({ type: 'ping' }));
               this.socketTimeout = setTimeout(() => lost('信令心跳超时'), 5000);
             }, 3000);
-            trace(`服务端协议: ${msg.protocolVersion === 2 ? 'v2' : '未标识版本'}`);
+            trace('服务端协议: v3');
             trace(`已加入房间: roomId=${msg.roomId} clientId=${msg.clientId}`);
-            // Discard a negotiation whose answer may have been lost with the old socket.
-            awaitingAnswer = false;
+            if (msg.resumed && awaitingAnswer) { trace('等待原协商的回答'); return; }
             offerSentAt = -Infinity;
-            await offer(false);
+            if (msg.resumed && pc.connectionState === 'connected' && pc.signalingState === 'stable') recovered();
+            else await offer(Boolean(msg.resumed));
           } else if (msg.type === 'pong' && ready) {
             clearSocketTimeout();
             remember();
-          } else if (msg.type === 'answer' && ready && awaitingAnswer) {
+          } else if (msg.type === 'answer' && ready) {
+            if (!awaitingAnswer) return; // Cached resume answer may already have been applied.
             trace('Answer 已收到');
             await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
             if (!active()) { return; }
@@ -299,7 +306,7 @@ export class ScrcpyClient {
   get dataChannel(): RTCDataChannel | null { return this.controlChannel; }
   // Page lifecycle teardown must not send bye or revoke the recovery credential.
   suspend(): void {
-    if (this.resumeSecret) { saveResumeSession(this.resumeUrl, this.resumeSecret); }
+    if (this.resumeSecret) { saveResumeSession(this.resumeUrl, this.resumeSecret, this.clientId, this.room); }
     this.dispose(false);
   }
   close(): void { this.dispose(true); }

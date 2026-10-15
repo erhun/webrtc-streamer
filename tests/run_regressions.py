@@ -13,6 +13,9 @@ source = 'server/src/main/java/com/genymobile/scrcpy/'
 def run(*args):
     subprocess.run(list(args), check=True)
 run(sys.executable, 'tests/run_video_adaptation.py')
+run(sys.executable, 'tests/run_architecture.py')
+run(sys.executable, 'tests/native_abi_test.py')
+run(sys.executable, 'tests/native_build_test.py')
 run(sys.executable, 'tests/run_foreground_service.py')
 run(sys.executable, 'tests/deploy_system_app_test.py')
 with tempfile.TemporaryDirectory(prefix='streaming-tests-', dir=root / 'tests') as temp:
@@ -21,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix='streaming-tests-', dir=root / 'tests') 
                       'public static void d(String s) {} public static void w(String s) {} }\n')
     run(java, '-m', 'jdk.compiler/com.sun.tools.javac.Main', '-d', temp,
         str(logger), source + 'device/NativeEncoderBridge.java', source + 'device/DataChannelInputStream.java',
-        source + 'signal/SessionAdmission.java', source + 'video/CaptureRefreshGate.java', source + 'video/BitrateLadder.java', 'tests/StreamingTest.java', 'tests/ParseJava.java')
+        source + 'video/CaptureRefreshGate.java', source + 'video/BitrateLadder.java', 'tests/StreamingTest.java', 'tests/ParseJava.java')
     run(java, '-cp', temp, 'StreamingTest')
     run(java, '-cp', temp, 'ParseJava', 'server/src/main/java')
     binary = str(Path(temp) / 'media-test')

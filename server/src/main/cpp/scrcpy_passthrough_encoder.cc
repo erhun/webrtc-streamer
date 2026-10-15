@@ -56,14 +56,13 @@ EncodedVideoTrackSource::EncodedVideoTrackSource(std::function<void()> refresh)
 
 void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, int64_t pts_us, bool config, bool keyframe,
         int width, int height) {
-    static int frame_count = 0;
     if (config) {
         SCP_LOGE("OnEncodedFrame: config len=%zu", len);
         sps_pps_.assign(annexb, annexb + len);
         return;
     }
-    if (++frame_count % 60 == 1) {
-        SCP_LOGE("OnEncodedFrame: frame#%d key=%d len=%zu %dx%d", frame_count, keyframe, len, width, height);
+    if (++source_frame_count_ % 60 == 1) {
+        SCP_LOGE("OnEncodedFrame: frame#%d key=%d len=%zu %dx%d", source_frame_count_, keyframe, len, width, height);
     }
 
     // Android screen PTS and CLOCK_MONOTONIC share the monotonic time base.
@@ -152,9 +151,8 @@ int32_t ScrcpyPassthroughEncoder::Release() {
 
 int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
         const std::vector<webrtc::VideoFrameType>* frame_types) {
-    static int enc_count = 0;
-    if (++enc_count <= 5 || enc_count % 10 == 0) {
-        SCP_LOGE("Encode: #%d", enc_count);
+    if (++encode_count_ <= 5 || encode_count_ % 10 == 0) {
+        SCP_LOGE("Encode: #%d", encode_count_);
     }
     if (frame_types != nullptr) {
         for (webrtc::VideoFrameType type : *frame_types) {
@@ -194,8 +192,7 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
             : webrtc::VideoFrameType::kVideoFrameDelta);
     image._encodedWidth = encoded->width();
     image._encodedHeight = encoded->height();
-    static int dbg_count = 0;
-    if (++dbg_count <= 2 && encoded->size() >= 8) {
+    if (++debug_count_ <= 2 && encoded->size() >= 8) {
         const uint8_t* d = encoded->data();
         SCP_LOGE("Encode: key=%d size=%zu data[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x",
                 encoded->keyframe(), encoded->size(), d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
@@ -216,9 +213,8 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
     }
 
     webrtc::EncodedImageCallback::Result result = callback->OnEncodedImage(image, &codec_specific);
-    static int cb_count = 0;
-    if (++cb_count % 30 == 1) {
-        SCP_LOGE("Encode: OnEncodedImage result=%d cb#%d", (int) result.error, cb_count);
+    if (++callback_count_ % 30 == 1) {
+        SCP_LOGE("Encode: OnEncodedImage result=%d cb#%d", (int) result.error, callback_count_);
     }
     return result.error == webrtc::EncodedImageCallback::Result::OK ? WEBRTC_VIDEO_CODEC_OK : WEBRTC_VIDEO_CODEC_ERROR;
 }
@@ -239,7 +235,7 @@ void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters)
     // Deliver the budget first, then request a freshly encoded IDR. Transport
     // readiness alone does not mean VideoStreamEncoder is no longer paused.
     // Do not wait for Encode(delta) to discover the discarded startup IDR.
-    // Rate smoothing is handled by Java BitrateRamp; pass the target through unchanged.
+    // Java VideoAdaptationPolicy owns tier smoothing; pass the raw allocation through unchanged.
     if (callback) { callback(target_bps, parameters.framerate_fps); }
     if (refresh) {
         SCP_LOGE("First positive encoder rate: bps=%d; requesting fresh keyframe", target_bps);

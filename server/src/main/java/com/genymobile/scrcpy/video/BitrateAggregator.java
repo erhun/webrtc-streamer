@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class BitrateAggregator {
+    public enum Policy { MINIMUM, CONTROLLER }
 
     public interface Output {
         void onAggregatedBitrate(int bps, double fps);
@@ -26,9 +27,21 @@ public final class BitrateAggregator {
 
     private final Map<NativeEncoderBridge, Sample> samples = new ConcurrentHashMap<>();
     private final Output output;
+    private final Policy policy;
+    private NativeEncoderBridge preferred;
 
     public BitrateAggregator(Output output) {
+        this(output, Policy.MINIMUM);
+    }
+
+    public BitrateAggregator(Output output, Policy policy) {
         this.output = output;
+        this.policy = policy;
+    }
+
+    public synchronized void setPreferredBridge(NativeEncoderBridge bridge) {
+        preferred = bridge;
+        emitBudget();
     }
 
     public synchronized void addBridge(NativeEncoderBridge bridge) {
@@ -72,6 +85,11 @@ public final class BitrateAggregator {
     }
 
     private void emitBudget() {
+        Sample controller = preferred != null ? samples.get(preferred) : null;
+        if (policy == Policy.CONTROLLER && controller != null) {
+            output.onAggregatedBitrate(controller.bps, controller.fps);
+            return;
+        }
         int minBps = Integer.MAX_VALUE;
         double minFps = 0;
         for (Sample s : samples.values()) {

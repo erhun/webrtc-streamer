@@ -108,7 +108,8 @@ std::string String(JNIEnv* env, jstring value) {
 extern "C" {
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) { jvm = vm; return JNI_VERSION_1_6; }
 JNIEXPORT jlong JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nativeCreate(
-        JNIEnv* env, jobject bridge, jboolean audio, jint audio_scheme, jstring turn, jstring user, jstring password) {
+        JNIEnv* env, jobject bridge, jboolean audio, jint audio_scheme, jstring turn, jstring user, jstring password,
+        jint min_port, jint max_port) {
     auto session = std::make_unique<Session>();
     auto cb = std::make_shared<Callbacks>(env, bridge);
     session->callbacks = cb;
@@ -116,8 +117,8 @@ JNIEXPORT jlong JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_na
     session->video = webrtc::make_ref_counted<scrcpy::EncodedVideoTrackSource>(
             [cb] { cb->Call([&](JNIEnv* e, jobject o) { e->CallVoidMethod(o, cb->keyframe); }); });
     session->pc = std::make_unique<scrcpy::ScrcpyPeerConnection>();
-    std::string scheme = audio_scheme == 1 ? "opus" : "pcm";
-    if (!session->pc->Initialize(session->video, audio, scheme, String(env, turn), String(env, user), String(env, password),
+    if (audio_scheme != 0) { return 0; } // WebRTC always uses PCM -> built-in Opus.
+    if (!session->pc->Initialize(session->video, audio, String(env, turn), String(env, user), String(env, password), min_port, max_port,
             [cb](int bps, double fps) { cb->Call([&](JNIEnv* e, jobject o) { e->CallVoidMethod(o, cb->bitrate, bps, fps); }); },
             [cb] { cb->Call([&](JNIEnv* e, jobject o) { e->CallVoidMethod(o, cb->keyframe); }); },
             session->core->network_thread.get(), session->core->worker_thread.get(), session->core->signaling_thread.get())) {
@@ -170,14 +171,6 @@ JNIEXPORT void JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nat
     auto size = env->GetArrayLength(data);
     auto* bytes = env->GetByteArrayElements(data, nullptr); if (!bytes) { return; }
     s->pc->PushAudio(reinterpret_cast<const uint8_t*>(bytes), size, pts);
-    env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
-}
-JNIEXPORT void JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nativePushOpusFrame(
-        JNIEnv* env, jobject, jlong handle, jbyteArray data, jlong pts) {
-    auto* s = Get(handle); if (!s) { return; }
-    auto size = env->GetArrayLength(data);
-    auto* bytes = env->GetByteArrayElements(data, nullptr); if (!bytes) { return; }
-    s->pc->PushOpusFrame(reinterpret_cast<const uint8_t*>(bytes), size, pts);
     env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
 }
 JNIEXPORT jboolean JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nativeResetPeer(

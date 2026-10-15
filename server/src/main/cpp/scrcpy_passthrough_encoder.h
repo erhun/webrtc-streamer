@@ -68,6 +68,7 @@ private:
     uint64_t age_sum_us_ = 0;
     uint64_t age_count_ = 0;
     std::atomic<uint64_t> encoded_bytes_{0};
+    int source_frame_count_ = 0;
     MediaClock clock_;
     RefreshVideoBroadcaster broadcaster_;
     std::vector<uint8_t> sps_pps_;
@@ -93,6 +94,9 @@ public:
 private:
     webrtc::Mutex mutex_;
     bool received_positive_rate_ = false;
+    int encode_count_ = 0;
+    int debug_count_ = 0;
+    int callback_count_ = 0;
     webrtc::EncodedImageCallback* callback_ = nullptr;
     std::function<void()> key_frame_request_callback_;
     std::function<void(int, double)> bitrate_callback_;

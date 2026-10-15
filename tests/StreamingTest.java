@@ -1,37 +1,9 @@
 import com.genymobile.scrcpy.device.DataChannelInputStream;
-import com.genymobile.scrcpy.signal.SessionAdmission;
 import com.genymobile.scrcpy.video.CaptureRefreshGate;
 import java.util.concurrent.atomic.AtomicBoolean;
 public final class StreamingTest {
     private static void check(boolean value) { if (!value) { throw new AssertionError(); } }
     public static void main(String[] args) throws Exception {
-        String token = "a".repeat(32);
-        Object a = new Object(), b = new Object();
-        SessionAdmission admission = new SessionAdmission(token, 0);
-        check(!admission.claim(a, "bad", 1)); check(admission.claim(a, token, 2));
-        check("LOGIN_TOKEN_USED".equals(admission.claimRejection(token, 3)));
-        check("LOGIN_TOKEN_INVALID".equals(admission.claimRejection("bad", 3)));
-        check(!admission.claim(b, token, 3)); check(!admission.release(b, 3)); check(admission.owns(a));
-        check(admission.release(a, 4)); check(!admission.claim(b, token, 4));
-        check(admission.updatePeerId("page-a"));
-        check(!admission.updatePeerId("page-a")); // Same page / new signaling socket: retain peer.
-        check(admission.updatePeerId("page-b")); // Reload: new DTLS/SCTP peer required.
-        check(!admission.updatePeerId("page-b")); // Retried resume is idempotent.
-        String resume = admission.getResumeToken();
-        check(!resume.equals(token) && resume.length() == 64);
-        check(!admission.resume(b, token, 5)); check(!admission.resume(b, "bad", 5));
-        check(admission.resume(b, resume, 5)); check(admission.owns(b));
-        check(!admission.release(a, 6)); // Delayed close from the replaced socket.
-        check(admission.resume(a, resume, 7)); // Authenticated takeover of a half-open socket.
-        check(!admission.release(b, 8)); check(admission.owns(a));
-        check(admission.release(a, 10));
-        check(!admission.recoveryExpired(45010)); check(admission.recoveryExpired(45011));
-        check("RESUME_EXPIRED".equals(admission.resumeRejection(resume, 45011)));
-        check("RESUME_TOKEN_INVALID".equals(admission.resumeRejection("bad", 45011)));
-        check(!admission.resume(b, resume, 45011));
-        SessionAdmission fresh = new SessionAdmission(token, 0);
-        check(!fresh.resume(a, fresh.getResumeToken(), 1));
-        check(!new SessionAdmission(token, 0).claim(a, token, 300001));
         CaptureRefreshGate refresh = new CaptureRefreshGate();
         for (int reload = 0; reload < 11; ++reload) {
             if (reload > 0) { refresh.newPeer(); }

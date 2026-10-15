@@ -7,10 +7,8 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 
-def main():
-    root = Path(__file__).resolve().parents[1]
-    java = os.environ.get("JAVA", "java")
-    bindings = {
+def platform_bindings():
+    return {
         "android/content/Context.java": """package android.content;
 public class Context { public static final String NOTIFICATION_SERVICE = "notification"; }
 """,
@@ -164,6 +162,12 @@ public final class JSONObject {
 public final class SdpRewriter { public static String rewriteIceCandidate(String text, PortMapConfig config) { return text; } }
 """,
     }
+
+
+def main():
+    root = Path(__file__).resolve().parents[1]
+    java = os.environ.get("JAVA", "java")
+    bindings = platform_bindings()
     manifest = ET.parse(root / "server/src/main/AndroidManifest.xml").getroot()
     name = "{http://schemas.android.com/apk/res/android}name"
     permissions = {node.attrib[name] for node in manifest.findall("uses-permission")}
@@ -182,7 +186,8 @@ public final class SdpRewriter { public static String rewriteIceCandidate(String
             java, "-m", "jdk.compiler/com.sun.tools.javac.Main", "-Xlint:all", "-Werror", "-d", temp,
             *sources, str(root / "server/src/main/java/com/genymobile/scrcpy/ServerService.java"),
             str(root / "server/src/main/java/com/genymobile/scrcpy/signal/SignalServer.java"),
-            str(root / "server/src/main/java/com/genymobile/scrcpy/signal/Room.java"),
+            str(root / "server/src/main/java/com/genymobile/scrcpy/stream/PeerKey.java"),
+            str(root / "server/src/main/java/com/genymobile/scrcpy/signal/PeerLease.java"),
             str(root / "server/src/main/java/com/genymobile/scrcpy/signal/PortMapConfig.java"),
             str(root / "tests/SignalStartupTest.java"),
             str(root / "tests/ForegroundServiceTest.java"),

@@ -1,3 +1,5 @@
+> 本文包含历史版本记录。当前模块、协议和参数以 [architecture.md](architecture.md) 为准；发布门槛见 [commercial-readiness.md](commercial-readiness.md)。
+
 # 串流正确性修复（第 1～6 项）
 
 此文描述本次源码变更。历史文档中的模拟器结果不代表此版本已通过设备验收。

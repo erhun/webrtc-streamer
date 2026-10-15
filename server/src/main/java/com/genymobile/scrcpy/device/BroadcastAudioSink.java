@@ -1,7 +1,6 @@
 package com.genymobile.scrcpy.device;
 
 import com.genymobile.scrcpy.audio.AudioCodec;
-import com.genymobile.scrcpy.model.Codec;
 import com.genymobile.scrcpy.util.Ln;
 
 import android.media.MediaCodec;
@@ -14,13 +13,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class BroadcastAudioSink implements PacketSink {
 
     private final List<NativeEncoderBridge> bridges = new CopyOnWriteArrayList<>();
-    private final Codec codec;
     private long packetCount;
     private static final long LOG_INTERVAL = 5000;
 
-    public BroadcastAudioSink(Codec codec) {
-        this.codec = codec;
-    }
+    public BroadcastAudioSink() { }
 
     public void addBridge(NativeEncoderBridge bridge) {
         if (!bridges.contains(bridge)) {
@@ -33,8 +29,8 @@ public final class BroadcastAudioSink implements PacketSink {
     }
 
     @Override
-    public Codec getCodec() {
-        return codec;
+    public AudioCodec getCodec() {
+        return AudioCodec.RAW;
     }
 
     @Override
@@ -55,22 +51,16 @@ public final class BroadcastAudioSink implements PacketSink {
             return;
         }
         if (bridges.isEmpty()) {
-            Ln.w("BroadcastAudioSink: no bridges registered, dropping audio packet");
             return;
         }
         packetCount++;
         if (packetCount == 1 || packetCount % LOG_INTERVAL == 0) {
-            Ln.d("BroadcastAudioSink: packet #" + packetCount + ", " + buffer.remaining() + " bytes, " + bridges.size() + " bridges, codec=" + codec);
+            Ln.d("BroadcastAudioSink: packet #" + packetCount + ", " + buffer.remaining() + " bytes, " + bridges.size() + " bridges, PCM");
         }
         byte[] audioData = new byte[buffer.remaining()];
         buffer.get(audioData);
         for (NativeEncoderBridge bridge : bridges) {
-            ByteBuffer copy = ByteBuffer.wrap(audioData);
-            if (codec == AudioCodec.OPUS) {
-                bridge.pushOpusFrame(copy, pts);
-            } else {
-                bridge.pushPcm(copy, pts);
-            }
+            bridge.pushPcm(audioData, pts);
         }
     }
 

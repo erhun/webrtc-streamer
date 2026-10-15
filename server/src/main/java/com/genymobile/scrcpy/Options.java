@@ -27,6 +27,16 @@ public class Options {
     private int scid = -1; // 31-bit non-negative value, or -1
     private int signalPort;
     private String signalToken = "";
+    private String signalBind = "127.0.0.1";
+    private String signalRoom = "default";
+    private boolean signalDebug;
+    private int maxPeers = 10;
+    private String bandwidthPolicy = "controller";
+    public String getBandwidthPolicy() { return bandwidthPolicy; }
+    public String getSignalBind() { return signalBind; }
+    public String getSignalRoom() { return signalRoom; }
+    public boolean getSignalDebug() { return signalDebug; }
+    public int getMaxPeers() { return maxPeers; }
     private String turnUrl = "";
     private String turnUser = "";
     private String turnPassword = "";
@@ -380,6 +390,11 @@ public class Options {
                     options.scid = scid;
                     break;
                 case "signal_token": options.signalToken = value; break;
+                case "signal_bind": options.signalBind = value; break;
+                case "signal_room": options.signalRoom = value; break;
+                case "signal_debug": options.signalDebug = Boolean.parseBoolean(value); break;
+                case "max_peers": options.maxPeers = Integer.parseInt(value); break;
+                case "bandwidth_policy": options.bandwidthPolicy = value; break;
                 case "turn_url": options.turnUrl = value; break;
                 case "turn_user": options.turnUser = value; break;
                 case "turn_password": options.turnPassword = value; break;

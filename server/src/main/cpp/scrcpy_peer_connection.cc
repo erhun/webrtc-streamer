@@ -13,7 +13,6 @@
 #include "api/video_codecs/builtin_video_decoder_factory.h"
 #include "pc/peer_connection_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
-#include "scrcpy_audio_encoder_factory.h"
 #include "scrcpy_passthrough_encoder.h"
 #include "scrcpy_video_encoder_factory.h"
 
@@ -175,22 +174,18 @@ ScrcpyPeerConnection::~ScrcpyPeerConnection() {
             ClosePeerConnection();
             factory_ = nullptr;
             audio_source_ = nullptr;
-            opus_queue_.reset();
         });
     }
 }
 
 bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSource> track_source,
-        bool audio, const std::string& audio_scheme,
+        bool audio,
         const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
+        int min_port, int max_port,
         std::function<void(int, double)> bitrate, std::function<void()> keyframe,
         webrtc::Thread* network_thread, webrtc::Thread* worker_thread, webrtc::Thread* signaling_thread) {
     video_source_ = track_source;
     keyframe_callback_ = keyframe;
-    audio_scheme_ = audio_scheme;
-    if (audio && audio_scheme == "opus") {
-        opus_queue_ = std::make_shared<OpusFrameQueue>();
-    }
     network_thread_ = network_thread;
     worker_thread_ = worker_thread;
     signaling_thread_ = signaling_thread;
@@ -212,7 +207,7 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         auto env = webrtc::CreateEnvironment(&field_trials);
         deps.env = env;
         deps.adm = webrtc::CreateAudioDeviceModule(env, webrtc::AudioDeviceModule::kDummyAudio);
-        deps.audio_encoder_factory = scrcpy::CreateScrcpyAudioEncoderFactory(audio_scheme, opus_queue_);
+        deps.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
         deps.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
         deps.video_encoder_factory = std::make_unique<ScrcpyVideoEncoderFactory>(
             [this, bitrate](int bps, double fps) {
@@ -232,8 +227,10 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
             configuration_.servers.push_back(stun);
         }
         configuration_.bundle_policy = webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
-        configuration_.set_min_port(10001);
-        configuration_.set_max_port(10004);
+        if (min_port > 0 && max_port >= min_port && max_port <= 65535) {
+            configuration_.set_min_port(min_port);
+            configuration_.set_max_port(max_port);
+        }
         configuration_.ice_candidate_pool_size = 0;
         if (audio) { audio_source_ = webrtc::make_ref_counted<PcmAudioSource>(); }
         success = CreatePeerConnection();
@@ -293,15 +290,6 @@ void ScrcpyPeerConnection::PushAudio(const uint8_t* data, size_t len, int64_t pt
     if (audio_source_ != nullptr) { audio_source_->Push(data, len, pts_us); }
 }
 
-void ScrcpyPeerConnection::PushOpusFrame(const uint8_t* data, size_t len, int64_t pts_us) {
-    if (opus_queue_ == nullptr) { return; }
-    opus_queue_->Push(data, len);
-    if (audio_source_ != nullptr) {
-        static constexpr size_t kSilenceBytes = 960 * 2 * 2;
-        uint8_t silence[kSilenceBytes] = {};
-        audio_source_->Push(silence, kSilenceBytes, pts_us);
-    }
-}
 void ScrcpyPeerConnection::SetClosedCallback(std::function<void()> callback) {
     signaling_thread_->BlockingCall([&] { closed_callback_ = std::move(callback); });
 }
@@ -447,11 +435,7 @@ void ScrcpyPeerConnection::OnRemoteDescriptionSet() {
 }
 
 void ScrcpyPeerConnection::OnAnswerCreated(std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {
-    if (desc != nullptr) {
-        std::string sdp;
-        desc->ToString(&sdp);
-        SCP_LOGE("OnAnswerCreated: %s", sdp.c_str());
-    }
+    SCP_LOGE("Local answer created");
     peer_connection_->SetLocalDescription(
             std::move(desc),
             webrtc::make_ref_counted<LocalDescriptionObserver>(this));

@@ -26,8 +26,12 @@ public final class NativeEncoderBridge implements AutoCloseable {
     private long pcmPushCount;
 
     public synchronized void open(boolean audio, int audioScheme, String turn, String user, String password) {
+        open(audio, audioScheme, turn, user, password, 0, 0);
+    }
+    public synchronized void open(boolean audio, int audioScheme, String turn, String user, String password, int minPort, int maxPort) {
         if (handle != 0) { throw new IllegalStateException("Session already open"); }
-        handle = nativeCreate(audio, audioScheme, turn, user, password);
+        if (audioScheme != 0) { throw new IllegalArgumentException("WebRTC audio requires PCM input"); }
+        handle = nativeCreate(audio, audioScheme, turn, user, password, minPort, maxPort);
         if (handle == 0) { throw new IllegalStateException("Could not create WebRTC session"); }
     }
     public void setCallback(Callback value) { callback = value; }
@@ -37,17 +41,23 @@ public final class NativeEncoderBridge implements AutoCloseable {
     public synchronized void pushEncodedVideoFrame(ByteBuffer buffer, long pts, boolean config, boolean key, int width, int height) {
         if (handle != 0) { nativePushVideo(handle, copy(buffer), pts, config, key, width, height); }
     }
+    /** Immutable for the duration of this synchronous JNI call; broadcast does not copy once per viewer. */
+    public synchronized void pushEncodedVideoFrame(byte[] data, long pts, boolean config, boolean key, int width, int height) {
+        if (handle != 0) { nativePushVideo(handle, data, pts, config, key, width, height); }
+    }
     public synchronized void reportVideoBitrate(int bps) {
         if (handle != 0) { nativeVideoBitrate(handle, bps); }
     }
     private native void nativeVideoBitrate(long handle, int bps);
 
     public synchronized void pushPcm(ByteBuffer buffer, long pts) {
+        if (handle != 0) { pushPcm(copy(buffer), pts); }
+    }
+    public synchronized void pushPcm(byte[] data, long pts) {
         if (handle != 0) {
             pcmPushCount++;
             if (pcmPushCount == 1 || pcmPushCount % 500 == 0) {
                 // Diagnostic: check if audio is silence
-                byte[] data = copy(buffer);
                 long sum = 0;
                 for (int i = 0; i < data.length; i += 2) {
                     if (i + 1 < data.length) {
@@ -60,14 +70,11 @@ public final class NativeEncoderBridge implements AutoCloseable {
                 Ln.d("NativeEncoderBridge: pushPcm #" + pcmPushCount + ", " + data.length + " bytes, avgAmplitude=" + avgAmplitude + ", handle=" + handle);
                 nativePushPcm(handle, data, pts);
             } else {
-                nativePushPcm(handle, copy(buffer), pts);
+                nativePushPcm(handle, data, pts);
             }
         } else {
             Ln.w("NativeEncoderBridge: pushPcm called but handle is 0");
         }
-    }
-    public synchronized void pushOpusFrame(ByteBuffer buffer, long pts) {
-        if (handle != 0) { nativePushOpusFrame(handle, copy(buffer), pts); }
     }
     public synchronized boolean resetPeer() {
         try {
@@ -111,11 +118,10 @@ public final class NativeEncoderBridge implements AutoCloseable {
     private void onNativeClosed() {
         Runnable target = closedCallback; if (target != null) { target.run(); }
     }
-    private native long nativeCreate(boolean audio, int audioScheme, String turn, String user, String password);
+    private native long nativeCreate(boolean audio, int audioScheme, String turn, String user, String password, int minPort, int maxPort);
     private native void nativeDestroy(long session);
     private native void nativePushVideo(long session, byte[] data, long pts, boolean config, boolean key, int width, int height);
     private native void nativePushPcm(long session, byte[] data, long pts);
-    private native void nativePushOpusFrame(long session, byte[] data, long pts);
     private native void nativeOffer(long session, String sdp);
     private native void nativeIce(long session, String mid, int index, String sdp);
     private native boolean nativeSend(long session, byte[] data);

@@ -32,12 +32,13 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
 
   const connectBar = el('div', 'connect-bar');
   const urlInput = el('input', 'url-input') as HTMLInputElement;
-  urlInput.placeholder = 'ws://183.240.23.14:22780';
-  urlInput.value = 'ws://183.240.23.14:22780';
+  urlInput.placeholder = 'wss://stream.example.com/signal';
+  urlInput.value = queryParam('signal') ?? (location.protocol === 'https:'
+    ? `wss://${location.host}/signal` : 'ws://127.0.0.1:8080');
   const connectBtn = el('button', 'connect-btn', '连接');
   const tokenInput = el('input', 'token-input') as HTMLInputElement;
-  tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证（调试模式可留空）'; tokenInput.autocomplete = 'off';
-  tokenInput.value = '';  // 调试模式默认空 token
+  tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证'; tokenInput.autocomplete = 'off';
+  tokenInput.value = '';
   connectBar.append(urlInput, tokenInput, connectBtn);
 
   const stage = el('div', 'stage');
@@ -82,7 +83,7 @@ function main(): void {
     return client?.sendControlMessage(payload) ?? false;
   };
 
-  const connect = async (url: string): Promise<void> => {
+  const connect = async (url: string, restoring = false): Promise<void> => {
     if (!url) {
       return;
     }
@@ -156,8 +157,9 @@ function main(): void {
 
     await client.connect({
       signalingUrl: url,
+      room: queryParam('room') ?? readResumeSession(url)?.room ?? 'default',
       iceTransportPolicy: queryParam('ice') === 'relay' ? 'relay' : 'all',
-      sessionToken: (document.querySelector('.token-input') as HTMLInputElement).value,
+      sessionToken: restoring ? '' : (document.querySelector('.token-input') as HTMLInputElement).value,
       iceServers: TURN_URL
         ? [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }]
         : [],
@@ -176,7 +178,7 @@ function main(): void {
     const saved = readResumeSession();
     if (!saved) { return; }
     (document.querySelector('.url-input') as HTMLInputElement).value = saved.url;
-    void connect(saved.url).catch((error) => { client?.close(); status.textContent = String(error); });
+    void connect(saved.url, true).catch((error) => { client?.close(); status.textContent = String(error); });
   };
   window.addEventListener('pagehide', () => {
     stopFirstFrameRecovery();

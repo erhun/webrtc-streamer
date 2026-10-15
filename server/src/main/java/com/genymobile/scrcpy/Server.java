@@ -6,29 +6,20 @@ import com.genymobile.scrcpy.audio.AudioDirectCapture;
 import com.genymobile.scrcpy.audio.AudioEncoder;
 import com.genymobile.scrcpy.audio.AudioPlaybackCapture;
 import com.genymobile.scrcpy.audio.AudioRawRecorder;
-import com.genymobile.scrcpy.audio.AudioScheme;
 import com.genymobile.scrcpy.audio.AudioSource;
 import com.genymobile.scrcpy.control.ControlChannel;
-import com.genymobile.scrcpy.control.ControlManager;
 import com.genymobile.scrcpy.control.Controller;
-import com.genymobile.scrcpy.device.DataChannelInputStream;
-import com.genymobile.scrcpy.device.DataChannelOutputStream;
 import com.genymobile.scrcpy.device.DesktopConnection;
 import com.genymobile.scrcpy.device.Device;
-import com.genymobile.scrcpy.device.BroadcastAudioSink;
-import com.genymobile.scrcpy.device.BroadcastVideoSink;
-import com.genymobile.scrcpy.device.NativeEncoderBridge;
 import com.genymobile.scrcpy.device.PacketSink;
 import com.genymobile.scrcpy.device.Streamer;
-import com.genymobile.scrcpy.device.WebRtcPacketSink;
 import com.genymobile.scrcpy.model.ConfigurationException;
-import com.genymobile.scrcpy.signal.PortMapConfig;
-import com.genymobile.scrcpy.signal.SignalServer;
+import com.genymobile.scrcpy.stream.StreamingConfig;
+import com.genymobile.scrcpy.stream.StreamingSession;
 import com.genymobile.scrcpy.model.NewDisplay;
 import com.genymobile.scrcpy.opengl.OpenGLRunner;
 import com.genymobile.scrcpy.util.Ln;
 import com.genymobile.scrcpy.util.LogUtils;
-import com.genymobile.scrcpy.video.BitrateAggregator;
 import com.genymobile.scrcpy.video.CameraCapture;
 import com.genymobile.scrcpy.video.NewDisplayCapture;
 import com.genymobile.scrcpy.video.ScreenCapture;
@@ -48,9 +39,6 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
 
 public final class Server {
 
@@ -118,9 +106,6 @@ public final class Server {
         boolean tunnelForward = options.isTunnelForward();
         boolean control = options.getControl();
         boolean video = options.getVideo();
-        // Video-only WebRTC sessions isolate receiver buffering from A/V sync.
-        // Disable capture and track creation together; muting playback is insufficient.
-        //boolean audio = options.getAudio() && options.getSignalPort() == 0;
         boolean audio = options.getAudio();
         Ln.i("Audio configuration: enabled=" + audio + " source=" + options.getAudioSource()
                 + " scheme=" + options.getAudioScheme().getName());
@@ -132,14 +117,10 @@ public final class Server {
 
         List<AsyncProcessor> asyncProcessors = new ArrayList<>();
 
-        NativeEncoderBridge bridge = null;
-        SignalServer signalServer = null;
-        DataChannelInputStream dataIn = null;
+        StreamingSession streaming = null;
         DesktopConnection connection = null;
         PacketSink videoSink = null;
         PacketSink audioSink = null;
-        AtomicReference<SurfaceEncoder> encoderRef = new AtomicReference<>();
-        BitrateAggregator bitrateAggregator = null;
         int signalPort = options.getSignalPort();
         if (signalPort == 0) {
             connection = DesktopConnection.open(scid, tunnelForward, video, audio, control, sendDummyByte);
@@ -152,49 +133,20 @@ public final class Server {
                 if (!video || options.getVideoCodec() != VideoCodec.H264) {
                     throw new ConfigurationException("WebRTC requires H.264 video");
                 }
-                if (!options.getSignalToken().isEmpty() && options.getSignalToken().length() < 32) {
-                    throw new ConfigurationException("signal_token must be empty or at least 32 characters");
-                }
-                bridge = new NativeEncoderBridge();
-                // 主 bridge 断开时不停止会话，服务端长驻等待新客户端连接
-                AudioScheme scheme = options.getAudioScheme();
-                Ln.i("WebRTC audio scheme: " + scheme.getName());
-                bridge.open(audio, scheme.ordinal(), options.getTurnUrl(), options.getTurnUser(), options.getTurnPassword());
+                streaming = new StreamingSession(new StreamingConfig(options), session::stop);
             }
 
             Controller controller = null;
-            ControlManager controlManager = null;
-            AtomicReference<DataChannelInputStream> controllerInputRef = new AtomicReference<>();
-            AtomicReference<DataChannelOutputStream> controlOutputRef = new AtomicReference<>();
-
             if (control) {
-                ControlChannel controlChannel = null;
-                if (connection != null) {
-                    controlChannel = connection.getControlChannel();
-                } else if (bridge != null) {
-                    controlManager = new ControlManager();
-                    DataChannelInputStream controllerInput = new DataChannelInputStream(session::stop);
-                    controllerInputRef.set(controllerInput);
-                    controlManager.setController(data -> {
-                        DataChannelInputStream input = controllerInputRef.get();
-                        if (input != null) {
-                            input.onData(data);
-                        }
-                    });
-                    DataChannelOutputStream dataOut = new DataChannelOutputStream(bridge);
-                    controlOutputRef.set(dataOut);
-                    controlChannel = new ControlChannel(controllerInput, dataOut);
-                }
-                if (controlChannel != null) {
-                    controller = new Controller(controlChannel, cleanUp, options);
-                    asyncProcessors.add(controller);
-                }
+                ControlChannel channel = streaming != null ? streaming.controlChannel() : connection.getControlChannel();
+                controller = new Controller(channel, cleanUp, options);
+                asyncProcessors.add(controller);
             }
 
             if (audio) {
                 AudioCodec audioCodec;
-                if (bridge != null) {
-                    audioCodec = options.getAudioScheme() == AudioScheme.OPUS ? AudioCodec.OPUS : AudioCodec.RAW;
+                if (streaming != null) {
+                    audioCodec = AudioCodec.RAW;
                 } else {
                     audioCodec = options.getAudioCodec();
                 }
@@ -206,7 +158,8 @@ public final class Server {
                     audioCapture = new AudioPlaybackCapture(context);
                 }
 
-                audioSink = createAudioSink(bridge, connection, audioCodec, options);
+                audioSink = streaming != null ? streaming.audioSink()
+                        : new Streamer(connection.getAudioFd(), audioCodec, options.getSendStreamMeta(), options.getSendFrameMeta());
                 AsyncProcessor audioRecorder;
                 if (audioCodec == AudioCodec.RAW) {
                     audioRecorder = new AudioRawRecorder(audioCapture, audioSink);
@@ -217,7 +170,8 @@ public final class Server {
             }
 
             if (video) {
-                videoSink = createVideoSink(bridge, connection, options);
+                videoSink = streaming != null ? streaming.videoSink()
+                        : new Streamer(connection.getVideoFd(), options.getVideoCodec(), options.getSendStreamMeta(), options.getSendFrameMeta());
                 SurfaceCapture surfaceCapture;
                 if (options.getVideoSource() == VideoSource.DISPLAY) {
                     NewDisplay newDisplay = options.getNewDisplay();
@@ -231,34 +185,7 @@ public final class Server {
                     surfaceCapture = new CameraCapture(options);
                 }
                 SurfaceEncoder surfaceEncoder = new SurfaceEncoder(surfaceCapture, videoSink, options);
-                encoderRef.set(surfaceEncoder);
-                if (bridge != null) {
-                    bitrateAggregator = new BitrateAggregator(new BitrateAggregator.Output() {
-                        @Override
-                        public void onAggregatedBitrate(int bps, double fps) {
-                            SurfaceEncoder encoder = encoderRef.get();
-                            if (encoder != null) {
-                                encoder.onBitrate(bps, fps);
-                            }
-                        }
-                        @Override
-                        public void onAggregatedKeyFrameRequest() {
-                            SurfaceEncoder encoder = encoderRef.get();
-                            if (encoder != null) {
-                                encoder.onKeyFrameRequest();
-                            }
-                        }
-                        @Override
-                        public void onAggregatedPeerReset() {
-                            SurfaceEncoder encoder = encoderRef.get();
-                            if (encoder != null) {
-                                encoder.onPeerReset();
-                            }
-                        }
-                    });
-                    bitrateAggregator.addBridge(bridge);
-                    bridge.setCallback(createAggregatorCallback(bridge, bitrateAggregator));
-                }
+                if (streaming != null) { streaming.setEncoder(surfaceEncoder); }
                 asyncProcessors.add(surfaceEncoder);
 
                 if (controller != null) {
@@ -266,9 +193,7 @@ public final class Server {
                 }
             }
 
-            if (bridge != null) {
-                signalServer = startSignalServer(bridge, videoSink, audioSink, bitrateAggregator, controlManager, controlOutputRef, options, session);
-            }
+            if (streaming != null) { streaming.start(); }
             Completion completion = new Completion(asyncProcessors.size());
             for (AsyncProcessor asyncProcessor : asyncProcessors) {
                 asyncProcessor.start((fatalError) -> {
@@ -278,8 +203,7 @@ public final class Server {
 
             Looper.loop(); // interrupted by the Completion implementation
         } finally {
-            if (signalServer != null) { signalServer.close(); }
-            if (dataIn != null) { dataIn.close(); }
+            if (streaming != null) { streaming.close(); }
             if (cleanUp != null) {
                 cleanUp.interrupt();
             }
@@ -307,213 +231,7 @@ public final class Server {
             if (connection != null) {
                 connection.close();
             }
-            if (bridge != null) {
-                bridge.close();
-            }
         }
-    }
-
-    private static PacketSink createAudioSink(NativeEncoderBridge primaryBridge, DesktopConnection connection,
-            AudioCodec audioCodec, Options options) {
-        if (primaryBridge != null) {
-            BroadcastAudioSink sink = new BroadcastAudioSink(audioCodec);
-            sink.addBridge(primaryBridge);
-            return sink;
-        }
-        return new Streamer(connection.getAudioFd(), audioCodec, options.getSendStreamMeta(), options.getSendFrameMeta());
-    }
-
-    private static PacketSink createVideoSink(NativeEncoderBridge primaryBridge, DesktopConnection connection, Options options) {
-        if (primaryBridge != null) {
-            BroadcastVideoSink sink = new BroadcastVideoSink();
-            sink.addBridge(primaryBridge);
-            return sink;
-        }
-        return new Streamer(connection.getVideoFd(), options.getVideoCodec(), options.getSendStreamMeta(), options.getSendFrameMeta());
-    }
-
-    private static NativeEncoderBridge.Callback createAggregatorCallback(NativeEncoderBridge bridge, BitrateAggregator aggregator) {
-        return new NativeEncoderBridge.Callback() {
-            @Override
-            public void onBitrate(int bps, double fps) {
-                aggregator.updateBitrate(bridge, bps, fps);
-            }
-
-            @Override
-            public void onKeyFrameRequest() {
-                aggregator.requestKeyFrame();
-            }
-            @Override
-            public void onPeerReset() {
-                aggregator.resetBridge(bridge);
-            }
-        };
-    }
-
-    private static SignalServer startSignalServer(NativeEncoderBridge primaryBridge, PacketSink videoSink,
-            PacketSink audioSink, BitrateAggregator bitrateAggregator, ControlManager controlManager,
-            AtomicReference<DataChannelOutputStream> controlOutputRef,
-            Options options, Session session) {
-        int maxPeers = 10;
-        Map<String, NativeEncoderBridge> clientBridges = new ConcurrentHashMap<>();
-        AtomicReference<String> primaryClientId = new AtomicReference<>();
-        AtomicReference<NativeEncoderBridge> primaryBridgeRef = new AtomicReference<>(primaryBridge);
-        AtomicReference<SignalServer> serverRef = new AtomicReference<>();
-        boolean audio = options.getAudio();
-        AudioScheme scheme = options.getAudioScheme();
-        String turnUrl = options.getTurnUrl();
-        String turnUser = options.getTurnUser();
-        String turnPassword = options.getTurnPassword();
-        BroadcastVideoSink broadcastVideoSink = videoSink instanceof BroadcastVideoSink ? (BroadcastVideoSink) videoSink : null;
-        BroadcastAudioSink broadcastAudioSink = audioSink instanceof BroadcastAudioSink ? (BroadcastAudioSink) audioSink : null;
-
-        PortMapConfig portMapConfig = new PortMapConfig(
-                options.getPublicIp(),
-                options.getLocalMinPort(),
-                options.getLocalMaxPort(),
-                options.getExternalMinPort(),
-                options.getExternalMaxPort());
-        SignalServer signalServer = new SignalServer(options.getSignalPort(), options.getSignalToken(), maxPeers,
-                new SignalServer.Listener() {
-            @Override
-            public void onServerStartFailed(Exception error) {
-                Ln.e("Signal listener startup failed; stopping streaming session", error);
-                session.stop();
-            }
-
-            @Override
-            public void onClientJoined(String roomId, String clientId) {
-                Ln.i("onClientJoined called: roomId=" + roomId + " clientId=" + clientId);
-                NativeEncoderBridge bridge;
-                if (primaryClientId.compareAndSet(null, clientId)) {
-                    Ln.i("Client is primary, checking bridge state");
-                    // 尝试复用 primaryBridge，如果已关闭则创建新的
-                    NativeEncoderBridge oldBridge = primaryBridgeRef.get();
-                    if (oldBridge != null && !oldBridge.isClosed()) {
-                        bridge = oldBridge;
-                        Ln.i("Reusing primary bridge for client: " + clientId);
-                    } else {
-                        // 创建新的 primary bridge
-                        Ln.i("Creating new primary bridge for client: " + clientId);
-                        bridge = new NativeEncoderBridge();
-                        primaryBridgeRef.set(bridge);
-                        bridge.open(audio, scheme.ordinal(), turnUrl, turnUser, turnPassword);
-                        Ln.i("New primary bridge opened successfully");
-                    }
-                } else {
-                    Ln.i("Client is additional, creating new bridge: " + clientId);
-                    bridge = new NativeEncoderBridge();
-                    bridge.setClosedCallback(session::stop);
-                    bridge.open(audio, scheme.ordinal(), turnUrl, turnUser, turnPassword);
-                    Ln.i("Additional bridge created for client: " + clientId);
-                }
-                clientBridges.put(clientId, bridge);
-                if (broadcastVideoSink != null) {
-                    broadcastVideoSink.addBridge(bridge);
-                    Ln.i("Bridge added to video sink: " + clientId);
-                }
-                if (broadcastAudioSink != null) {
-                    broadcastAudioSink.addBridge(bridge);
-                    Ln.i("Bridge added to audio sink: " + clientId);
-                }
-                if (bitrateAggregator != null) {
-                    bitrateAggregator.addBridge(bridge);
-                    bridge.setCallback(createAggregatorCallback(bridge, bitrateAggregator));
-                }
-                if (controlManager != null) {
-                    Ln.i("Setting up control channel for client: " + clientId);
-                    DataChannelOutputStream controlOutput = controlOutputRef.get();
-                    if (controlOutput != null) {
-                        controlOutput.setBridge(bridge);
-                        Ln.i("Updated control output bridge for client: " + clientId);
-                    }
-                    bridge.setDataCallback(data -> {
-                        Ln.d("Received control data from client " + clientId + ": " + data.length + " bytes");
-                        controlManager.handleControlData(clientId, data);
-                    });
-                    controlManager.registerForwarder(clientId, data -> { });
-                    controlManager.registerSender(clientId, message -> {
-                        Ln.d("Sending control data to client " + clientId + ": " + message.length() + " bytes");
-                        bridge.sendData(message.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                    });
-                    Ln.i("Control channel setup complete for client: " + clientId);
-                }
-                SignalServer server = serverRef.get();
-                bridge.setSignalCallback(new NativeEncoderBridge.SignalCallback() {
-                    @Override
-                    public void onAnswer(String sdp) {
-                        server.sendAnswer(roomId, clientId, sdp);
-                    }
-
-                    @Override
-                    public void onIceCandidate(String mid, int index, String sdp) {
-                        server.sendIceCandidate(roomId, clientId, mid, index, sdp);
-                    }
-                });
-                if (bitrateAggregator != null) {
-                    bitrateAggregator.requestKeyFrame();
-                    Ln.i("Requested keyframe for new client: " + clientId);
-                }
-            }
-
-            @Override
-            public void onClientLeft(String roomId, String clientId) {
-                NativeEncoderBridge bridge = clientBridges.remove(clientId);
-                if (bridge != null) {
-                    if (broadcastVideoSink != null) {
-                        broadcastVideoSink.removeBridge(bridge);
-                    }
-                    if (broadcastAudioSink != null) {
-                        broadcastAudioSink.removeBridge(bridge);
-                    }
-                    if (bitrateAggregator != null) {
-                        bitrateAggregator.removeBridge(bridge);
-                    }
-                    if (controlManager != null) {
-                        controlManager.unregisterForwarder(clientId);
-                    }
-                    if (bridge != primaryBridge) {
-                        bridge.close();
-                        Ln.i("Closed additional bridge for client: " + clientId);
-                    } else {
-                        // Primary client disconnected: reset the native peer connection
-                        // so the next client gets a fresh connection instead of waiting
-                        // for the old one's 45-second recovery timeout.
-                        Ln.i("Primary client left, resetting native peer connection: " + clientId);
-                        bridge.resetPeer();
-                    }
-                }
-                if (primaryClientId.compareAndSet(clientId, null)) {
-                    Ln.i("Primary client left, waiting for reconnection: " + clientId);
-                    // 不停止会话，服务端长驻等待新客户端连接
-                }
-            }
-
-            @Override
-            public void onOffer(String roomId, String clientId, String sdp) {
-                NativeEncoderBridge bridge = clientBridges.get(clientId);
-                if (bridge != null) {
-                    bridge.onOffer(sdp);
-                }
-            }
-
-            @Override
-            public void onIceCandidate(String roomId, String clientId, String mid, int index, String sdp) {
-                NativeEncoderBridge bridge = clientBridges.get(clientId);
-                if (bridge != null) {
-                    bridge.onIceCandidate(mid, index, sdp);
-                }
-            }
-
-            @Override
-            public void onRoomEmpty(String roomId) {
-                Ln.i("Room empty, server staying alive for new connections: roomId=" + roomId);
-                // 房间清空也不停止会话，服务端长驻等待新客户端连接
-            }
-        }, portMapConfig);
-        serverRef.set(signalServer);
-        signalServer.start();
-        return signalServer;
     }
 
     private static void prepareMainLooper() {

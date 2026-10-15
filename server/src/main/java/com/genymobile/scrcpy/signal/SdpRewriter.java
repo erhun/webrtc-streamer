@@ -9,8 +9,8 @@ import com.genymobile.scrcpy.util.Ln;
  *   candidate:<foundation> <component> <transport> <priority> <address> <port> typ <type> ...
  *
  * The rewriter extracts the address (token 4) and port (token 5) from the candidate,
- * computes the mapped external port via {@link PortMapConfig}, and replaces all
- * occurrences of the local IP and local port in the SDP with the public values.
+ * computes the mapped external port via {@link PortMapConfig}, and replaces only
+ * the address and port fields. Foundation, priority and extension fields are preserved.
  */
 public final class SdpRewriter {
 
@@ -28,8 +28,8 @@ public final class SdpRewriter {
             return sdp;
         }
 
-        String[] tokens = sdp.split(" ");
-        if (tokens.length < 6) {
+        String[] tokens = sdp.trim().split("\\s+");
+        if (tokens.length < 8 || !"typ".equals(tokens[6]) || !"host".equals(tokens[7])) {
             return sdp;
         }
 
@@ -54,9 +54,10 @@ public final class SdpRewriter {
 
         Ln.i("SdpRewriter: " + localIp + ":" + localPort + " → " + publicIp + ":" + externalPort);
 
-        String result = sdp;
-        result = result.replace(localIp, publicIp);
-        result = result.replace(localPortStr, externalPortStr);
-        return result;
+        tokens[4] = publicIp;
+        tokens[5] = externalPortStr;
+        StringBuilder result = new StringBuilder(tokens[0]);
+        for (int i = 1; i < tokens.length; ++i) { result.append(' ').append(tokens[i]); }
+        return result.toString();
     }
 }

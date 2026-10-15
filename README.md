@@ -1,3 +1,6 @@
+> 当前重构架构见 [架构说明](docs/architecture.md)，部署与验证边界见 [商用发布验收](docs/commercial-readiness.md)。
+> 协议 v3 与 JNI 接口有变化，H5/JNI/APK 必须成套重建；旧二进制不代表本次源码。
+
 > 本分支 WebRTC 修复与接入变化见 [串流修复说明](docs/streaming-fixes.md)。以下保留 scrcpy 上游说明。
 
 > [!WARNING]

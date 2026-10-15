@@ -1,3 +1,5 @@
+> 本文包含历史版本记录。当前模块、协议和参数以 [architecture.md](architecture.md) 为准；发布门槛见 [commercial-readiness.md](commercial-readiness.md)。
+
 # Weak-network session recovery
 
 Based on `dev-1.1.0` at `5ef675878e0103621ca15478df20c0d3f882dc47`.
