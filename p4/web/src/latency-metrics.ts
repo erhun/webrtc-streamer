@@ -39,7 +39,7 @@ export function streamMean(rows: Stat[], previous: Map<string, Stat>, sending: b
   previous.clear(); next.forEach((row, id) => previous.set(id, row));
   return count ? sum / count * 1000 : null;
 }
-export function mountLatencyMetrics(video: HTMLVideoElement,
+export function mountLatencyMetrics(container: HTMLElement,
     getPeer: () => RTCPeerConnection | null, getChannel: () => RTCDataChannel | null): void {
   const bar = document.createElement('div');
   bar.className = 'stream-metrics';
@@ -57,7 +57,7 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
     '服务端 JNI 有效单调 PTS 帧龄样本的增量/时间；不包含无效 PTS 帧，不是源应用绘制频率',
     'outbound-rtp framesEncoded 增量/时间；passthrough 中表示 WebRTC 接收编码回调，不是 MediaCodec 重编码'];
   const nodes = labels.map((_, i) => { const n = document.createElement('span'); n.title = tips[i]; bar.append(n); return n; });
-  video.closest('.stage')!.before(bar);
+  container.append(bar);
   const show = (i: number, value: number | null): void => {
     nodes[i].textContent = `${labels[i]}：${value === null ? '—' : i >= 9 ? value.toFixed(1) + ' fps'
       : ((i < 3 || i >= 6) ? value.toFixed(1) + ' ms' : (value / 1000).toFixed(0) + ' kbps')}`;

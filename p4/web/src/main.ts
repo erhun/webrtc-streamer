@@ -27,7 +27,7 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
+function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement; metricsBody: HTMLDivElement } {
   const root = document.getElementById('app')!;
 
   const connectBar = el('div', 'connect-bar');
@@ -47,6 +47,15 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
   video.playsInline = true;
   stage.append(video);
 
+  const metricsSection = el('div', 'metrics-section');
+  const metricsToggle = el('button', 'metrics-toggle', '指标信息 ▸');
+  const metricsBody = el('div', 'metrics-body') as HTMLDivElement;
+  metricsSection.append(metricsToggle, metricsBody);
+  metricsToggle.addEventListener('click', () => {
+    const expanded = metricsSection.classList.toggle('expanded');
+    metricsToggle.textContent = expanded ? '指标信息 ▾' : '指标信息 ▸';
+  });
+
   const toolbar = el('div', 'toolbar');
   const backBtn = el('button', 'tool-btn', '返回');
   const homeBtn = el('button', 'tool-btn', '主页');
@@ -58,23 +67,30 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
     void video.play().catch(() => { status.textContent = '播放被阻止，请再次点击开启声音'; });
   });
   toolbar.append(backBtn, homeBtn, audioBtn, status);
+  const diagSection = el('div', 'diag-section');
+  const diagToggle = el('button', 'diag-toggle', '连接诊断 ▸');
   const diagnostics = el('pre', 'diagnostics');
   diagnostics.id = 'diagnostics';
-  root.append(diagnostics);
+  diagSection.append(diagToggle, diagnostics);
+  diagToggle.addEventListener('click', () => {
+    const expanded = diagSection.classList.toggle('expanded');
+    diagToggle.textContent = expanded ? '连接诊断 ▾' : '连接诊断 ▸';
+  });
+  root.append(diagSection);
 
-  root.append(connectBar, stage, toolbar);
+  root.append(connectBar, metricsSection, stage, toolbar);
 
-  return { video, status };
+  return { video, status, metricsBody };
 }
 
 function main(): void {
-  const { video, status } = buildUi();
+  const { video, status, metricsBody } = buildUi();
 
   let frameCallback: number | null = null;
   let stopFirstFrameRecovery = (): void => {};
   let client: ScrcpyClient | null = null;
-  mountMetrics(video, () => client?.peerConnection ?? null);
-  mountLatencyMetrics(video, () => client?.peerConnection ?? null, () => client?.dataChannel ?? null);
+  mountMetrics(metricsBody, video, () => client?.peerConnection ?? null);
+  mountLatencyMetrics(metricsBody, () => client?.peerConnection ?? null, () => client?.dataChannel ?? null);
   let input: InputHandler | null = null;
   let dataChannel: RTCDataChannel | null = null;
 
@@ -173,10 +189,12 @@ function main(): void {
   });
 
   const restoreSession = (): void => {
+    const urlInput = document.querySelector('.url-input') as HTMLInputElement;
     const saved = readResumeSession();
-    if (!saved) { return; }
-    (document.querySelector('.url-input') as HTMLInputElement).value = saved.url;
-    void connect(saved.url).catch((error) => { client?.close(); status.textContent = String(error); });
+    const url = saved?.url ?? urlInput.value;
+    if (saved) { urlInput.value = saved.url; }
+    if (!url) { return; }
+    void connect(url).catch((error) => { client?.close(); status.textContent = String(error); });
   };
   window.addEventListener('pagehide', () => {
     stopFirstFrameRecovery();
