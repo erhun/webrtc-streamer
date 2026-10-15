@@ -48,7 +48,11 @@ $CLANG --version
 ## 3. 编译与链接（统一入口）
 
 当前使用内置 Opus 编码器；C++ 源码由构建脚本扫描，不再维护手写文件列表。
-请先按第 5 节配置编译器运行时，然后运行：
+Gradle 的 `merge*NativeLibs` 依赖 `prepareNativeLibrary`：先检查源码、构建脚本和 `.so` 的清单，
+一致则跳过编译；不一致时使用当前进程继承的工具链环境重建 JNI。缺少环境时停止并列出缺项。
+单独运行 Java test/lint 不会触发 native 重建。
+
+请先按第 5 节配置编译器运行时，再设置下面的环境变量。路径是历史机器示例，需替换为实际位置：
 
 ```bash
 export CLANG=/Users/gorilla/test/webrtc/clang-llvmorg-24-init-3796-g20e97c4b-2/bin/clang++
@@ -68,9 +72,31 @@ python3 server/tools/build_native.py
 - server/src/main/jniLibs/arm64-v8a/libscrcpy_native.so（Gradle 打包输入）
 - server/native-build.json（源码及产物哈希校验清单）
 
-也可设置上述环境变量后运行 ./p4/deploy.sh --build，完成编译、打包、签名和部署；
-该入口会复制同一份 JNI 库到 tmp/native/libscrcpy_native.so。
-仅删除旧文件名或复用 tmp/native 的历史 .so 无法保证 Java/JNI 匹配。
+配置上述环境后，直接运行 `./gradlew -p server assembleDebug` 会按需重建 JNI。
+也可只检查：
+
+```sh
+python3 server/tools/prepare_native.py --check
+```
+
+`p4/deploy.sh` 和 `p4/start-server.sh` 是被 Git 忽略的本地脚本，仓库不能保证其构建和启动流程。
+若使用本地 `deploy.sh --build`，它调用 Gradle 时必须继承这些 **export** 的环境变量。
+不要让本地脚本在校验后再用 `tmp/native` 中的旧 `.so` 覆盖 APK 内的库。
+
+### `Stale native library` 的处理
+
+该报错表示头文件、C++ 源码、Java JNI 桥或产物与 `server/native-build.json` 不一致。
+它不意味着删除清单或执行 `gradle clean` 就能修好；不要手改哈希或关闭打包校验。
+
+旧版本在打包前只检查、不自动编译。更新包含 `prepareNativeLibrary` 的分支后，配置
+`WEBRTC_ROOT`、`CLANG`、`ANDROID_SYSROOT`、`WEBRTC_REVISION`，重新执行 Gradle 即可按需重建。
+暂不更新构建入口时，也可在仓库根目录先手动执行 `python3 server/tools/build_native.py`，成功后再打包。
+`WEBRTC_REVISION` 必须来自实际生成静态库的 libwebrtc 源码，不能填本应用的 Git 提交。
+编译期间若源码改变，构建会失败且不替换旧产物；重新构建即可。
+
+`SIGNAL_TOKEN=""` 与 native 哈希报错无关。当前生产模式要求至少 32 字符的高熵凭证。
+空凭证只允许显式启动 `signal_debug=true` 的隔离调试；不能假定本地部署脚本支持同名环境变量。
+如果使用随机凭证，应通过受控方式交给 H5，不写入 URL 或日志。
 
 ---
 

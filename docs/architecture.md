@@ -132,7 +132,8 @@ H5 只接受 WSS 或 localhost WS。删除固定公网调试地址；页面默�
 使用静态 NAT 映射必须保证实际路由/防火墙与本地端口范围一致，改写 candidate 不会创建 NAT 映射。
 
 本次 JNI `nativeCreate` 增加媒体端口参数，原生源码和 Java 桥均有变化。必须一起部署新 H5、新 JNI、新 APK。
-重新启用的打包哈希检查会拒绝缺失清单或与源码不一致的 native 库。
+Gradle 在打包前运行 `prepareNativeLibrary`：一致则复用，否则用已配置的匹配工具链重建 JNI；
+缺少工具链或重建失败时拒绝打包。合并 native 库前仍会再次检查哈希。详见 `native-build.md`。
 
 ```sh
 # 使用匹配 libwebrtc revision 的 Chromium 工具链，并按 native-build.md 准备材料

@@ -31,6 +31,13 @@ common = [clang, '--target=aarch64-linux-android23', '--sysroot=' + str(sysroot)
           '-I' + str(materials / 'include'), '-I' + str(materials / 'include/third_party/abseil-cpp'), '-I' + str(cpp)]
 output = server / 'src/main/jniLibs/arm64-v8a/libscrcpy_native.so'
 output.parent.mkdir(parents=True, exist_ok=True)
+
+def source_hashes():
+    sources = sorted([*cpp.glob('*.cc'), *cpp.glob('*.h'), Path(__file__).resolve(),
+                      server / 'src/main/java/com/genymobile/scrcpy/device/NativeEncoderBridge.java'])
+    return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
+
+inputs = source_hashes()
 with tempfile.TemporaryDirectory(prefix='native-', dir=server) as temporary:
     temporary = Path(temporary)
     objects = []
@@ -46,10 +53,13 @@ with tempfile.TemporaryDirectory(prefix='native-', dir=server) as temporary:
                     '-shared', '-fuse-ld=' + os.environ.get('CLANG_LD', 'lld'), '-nostdlib++', '-Wl,--no-undefined',
                     '-Wl,--start-group', *objects, *map(str, archives), '-Wl,--end-group',
                     '-o', str(built), '-llog', '-ldl', '-lm', '-lz'], check=True)
+    if source_hashes() != inputs:
+        raise SystemExit('Native sources changed during compilation; retry the build. Existing artifacts were not replaced.')
+    files = dict(inputs)
+    files[str(output.relative_to(root))] = hashlib.sha256(built.read_bytes()).hexdigest()
+    manifest = {'webrtc_revision': os.environ['WEBRTC_REVISION'], 'compiler': compiler, 'files': files}
+    staged_manifest = temporary / 'native-build.json'
+    staged_manifest.write_text(json.dumps(manifest, indent=2) + '\n')
     built.replace(output)
-files = sorted([*cpp.glob('*.cc'), *cpp.glob('*.h'), output,
-                server / 'src/main/java/com/genymobile/scrcpy/device/NativeEncoderBridge.java'])
-manifest = {'webrtc_revision': os.environ['WEBRTC_REVISION'], 'compiler': compiler,
-            'files': {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}
-(server / 'native-build.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    staged_manifest.replace(server / 'native-build.json')
 print('Built JNI library and source manifest; build APK next.')
