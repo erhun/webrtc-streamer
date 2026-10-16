@@ -149,6 +149,8 @@ npm run build
 
 不要部署仓库中旧的 dist、APK 或 so 作为本次重构产物。
 
+低码率、低帧率和指标波动的诊断及本次恢复修复见 [low-bitrate-diagnostics.md](low-bitrate-diagnostics.md)。
+
 ## 测试与阅读顺序
 
 1. 先读 `Server.scrcpy()`，理解 TCP/WebRTC 组装分支。

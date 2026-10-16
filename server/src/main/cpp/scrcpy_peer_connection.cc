@@ -20,6 +20,7 @@
 #include <time.h>
 #include "api/stats/rtc_stats_collector_callback.h"
 #include "api/stats/rtc_stats_report.h"
+#include "api/stats/rtcstats_objects.h"
 
 #include <android/log.h>
 
@@ -198,9 +199,8 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         // Enable periodic ALR probing so the BWE measures real network capacity
         // instead of staying application-limited by the passthrough encoder's
         // content-dependent output rate.
-        // ForceSendPlayoutDelay negotiates max_playout_delay (500ms default in
-        // this string) instead of the 10s default, which enables the receiver's
-        // low-latency rendering path and caps the jitter buffer target delay.
+        // Request a small playout delay range. This is a receiver hint, not a
+        // guarantee that measured or target jitter-buffer delay stays below 100ms.
         static webrtc::FieldTrials field_trials(
                 "WebRTC-VideoRateControl/alr_probing:true/"
                 "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/");
@@ -210,9 +210,16 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         deps.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
         deps.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
         deps.video_encoder_factory = std::make_unique<ScrcpyVideoEncoderFactory>(
-            [this, bitrate](int bps, double fps) {
+            [this, bitrate](const webrtc::VideoEncoder::RateControlParameters& rates) {
+                const int bps = rates.bitrate.get_sum_bps();
                 allocated_bps_.store(bps);
-                if (bitrate) { bitrate(bps, fps); }
+                target_bps_.store(rates.target_bitrate.get_sum_bps());
+                bandwidth_allocation_bps_.store(rates.bandwidth_allocation.bps<int64_t>());
+                timespec now{};
+                if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
+                    rate_updated_us_.store(now.tv_sec * 1000000LL + now.tv_nsec / 1000);
+                }
+                if (bitrate) { bitrate(bps, rates.framerate_fps); }
             }, keyframe);
         webrtc::EnableMedia(deps);
         factory_ = webrtc::PeerConnectionFactory::Create(std::move(deps));
@@ -252,8 +259,13 @@ void ScrcpyPeerConnection::ClosePeerConnection() {
     pending_ice_.clear();
     remote_description_set_ = false;
     stats_pending_ = false;
+    telemetry_gate_.Reset();
     recovering_ = false;
     ++recovery_generation_;
+    allocated_bps_.store(-1);
+    target_bps_.store(-1);
+    bandwidth_allocation_bps_.store(-1);
+    rate_updated_us_.store(-1);
 }
 
 bool ScrcpyPeerConnection::CreatePeerConnection() {
@@ -360,7 +372,12 @@ void ScrcpyPeerConnection::OnDataChannelOpened(webrtc::scoped_refptr<webrtc::Dat
 }
 
 void ScrcpyPeerConnection::RequestLatencyStats() {
-    if (stats_pending_ || !peer_connection_) { return; }
+    if (stats_pending_ || !peer_connection_ || !data_channel_
+            || data_channel_->state() != webrtc::DataChannelInterface::kOpen) { return; }
+    timespec request_time{};
+    if (clock_gettime(CLOCK_MONOTONIC, &request_time) != 0) { return; }
+    const int64_t request_us = request_time.tv_sec * 1000000LL + request_time.tv_nsec / 1000;
+    if (!telemetry_gate_.Allow(request_us, allocated_bps_.load(), data_channel_->buffered_amount())) { return; }
     stats_pending_ = true;
     auto weak = lifetime();
     auto callback = webrtc::make_ref_counted<LatencyStatsCallback>(
@@ -369,7 +386,7 @@ void ScrcpyPeerConnection::RequestLatencyStats() {
             if (weak.expired()) { return; }
             stats_pending_ = false;
             if (!data_channel_ || data_channel_->state() != webrtc::DataChannelInterface::kOpen
-                    || data_channel_->buffered_amount() > 16384) { return; }
+                    || data_channel_->buffered_amount() > 1024) { return; }
             auto age = video_source_->CaptureAgeTotals();
             timespec now{};
             clock_gettime(CLOCK_MONOTONIC, &now);
@@ -378,17 +395,53 @@ void ScrcpyPeerConnection::RequestLatencyStats() {
                 + std::to_string(age.first) + ",\"captureFrames\":" + std::to_string(age.second)
                 + ",\"allocatedBps\":" + std::to_string(allocated_bps_.load())
                 + ",\"configuredBps\":" + std::to_string(configured_bps_.load())
+                + ",\"targetBps\":" + std::to_string(target_bps_.load())
+                + ",\"bandwidthAllocationBps\":" + std::to_string(bandwidth_allocation_bps_.load())
+                + ",\"rateUpdatedUs\":" + std::to_string(rate_updated_us_.load())
                 + ",\"encodedBytes\":" + std::to_string(video_source_->EncodedBytes())
                 + ",\"sampleUs\":" + std::to_string(sample_us)
                 + ",\"outbound\":[";
             bool first = true;
             for (const auto& stat : report) {
                 if (std::string(stat.type()) != "outbound-rtp") { continue; }
+                const auto& rtp = stat.cast_to<webrtc::RTCOutboundRtpStreamStats>();
+                if (rtp.kind.value_or("") != "video") { continue; }
+                webrtc::RTCOutboundRtpStreamStats compact(stat.id(), stat.timestamp());
+                compact.kind = rtp.kind;
+                compact.packets_sent = rtp.packets_sent;
+                compact.total_packet_send_delay = rtp.total_packet_send_delay;
+                compact.frames_encoded = rtp.frames_encoded;
+                compact.bytes_sent = rtp.bytes_sent;
+                compact.key_frames_encoded = rtp.key_frames_encoded;
+                compact.nack_count = rtp.nack_count;
+                compact.pli_count = rtp.pli_count;
+                compact.fir_count = rtp.fir_count;
+                compact.quality_limitation_reason = rtp.quality_limitation_reason;
                 if (!first) { payload += ","; }
                 first = false;
-                payload += stat.ToJson();
+                payload += compact.ToJson();
+            }
+            payload += "],\"network\":[";
+            first = true;
+            for (const auto& stat : report) {
+                if (std::string(stat.type()) != "transport") { continue; }
+                const auto& transport = stat.cast_to<webrtc::RTCTransportStats>();
+                if (!transport.selected_candidate_pair_id) { continue; }
+                const auto* selected = report.Get(*transport.selected_candidate_pair_id);
+                if (!selected || std::string(selected->type()) != "candidate-pair") { continue; }
+                const auto& pair = selected->cast_to<webrtc::RTCIceCandidatePairStats>();
+                webrtc::RTCTransportStats compact_transport(stat.id(), stat.timestamp());
+                compact_transport.selected_candidate_pair_id = transport.selected_candidate_pair_id;
+                webrtc::RTCIceCandidatePairStats compact_pair(selected->id(), selected->timestamp());
+                compact_pair.available_outgoing_bitrate = pair.available_outgoing_bitrate;
+                compact_pair.current_round_trip_time = pair.current_round_trip_time;
+                if (!first) { payload += ","; }
+                first = false;
+                payload += compact_transport.ToJson() + "," + compact_pair.ToJson();
             }
             payload += "]}";
+            // Bound diagnostics on the reliable input channel, including their queued bytes.
+            if (payload.size() > 2048 || data_channel_->buffered_amount() + payload.size() > 4096) { return; }
             data_channel_->Send(webrtc::DataBuffer(payload));
         });
     peer_connection_->GetStats(callback.get());
