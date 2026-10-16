@@ -1,5 +1,5 @@
 // Quality is an application estimate from RTT/loss, not radio RSSI.
-export function mountMetrics(video: HTMLVideoElement, getPeer: () => RTCPeerConnection | null): void {
+export function mountMetrics(container: HTMLElement, video: HTMLVideoElement, getPeer: () => RTCPeerConnection | null): void {
   const bar = document.createElement('div');
   bar.className = 'stream-metrics';
   bar.setAttribute('aria-label', '实时串流统计');
@@ -12,7 +12,7 @@ export function mountMetrics(video: HTMLVideoElement, getPeer: () => RTCPeerConn
   fields[6].node.title = 'requestVideoFrameCallback 的 presentedFrames 增量，表示提交到浏览器合成器的帧率';
   fields[3].node.className = 'quality';
   fields[3].node.title = '根据往返延迟和接收丢包率估算，不是 Wi-Fi 信号强度';
-  video.closest('.stage')!.before(bar);
+  container.append(bar);
   const show = (values: string[], level = ''): void => {
     fields.forEach((field, i) => { field.node.textContent = `${field.label}：${values[i]}`; });
     fields[3].node.dataset.level = level;

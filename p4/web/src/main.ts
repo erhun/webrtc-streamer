@@ -27,18 +27,17 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
+function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement; metricsBody: HTMLDivElement } {
   const root = document.getElementById('app')!;
 
   const connectBar = el('div', 'connect-bar');
   const urlInput = el('input', 'url-input') as HTMLInputElement;
-  urlInput.placeholder = 'wss://stream.example.com/signal';
-  urlInput.value = queryParam('signal') ?? (location.protocol === 'https:'
-    ? `wss://${location.host}/signal` : 'ws://127.0.0.1:8080');
+  urlInput.placeholder = 'ws://183.240.23.14:22780';
+  urlInput.value = 'ws://183.240.23.14:22780';
   const connectBtn = el('button', 'connect-btn', '连接');
   const tokenInput = el('input', 'token-input') as HTMLInputElement;
-  tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证'; tokenInput.autocomplete = 'off';
-  tokenInput.value = '';
+  tokenInput.type = 'password'; tokenInput.placeholder = '会话凭证（调试模式可留空）'; tokenInput.autocomplete = 'off';
+  tokenInput.value = '';  // 调试模式默认空 token
   connectBar.append(urlInput, tokenInput, connectBtn);
 
   const stage = el('div', 'stage');
@@ -47,6 +46,15 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
   video.muted = true; // Start reliably before asking for audible playback.
   video.playsInline = true;
   stage.append(video);
+
+  const metricsSection = el('div', 'metrics-section');
+  const metricsToggle = el('button', 'metrics-toggle', '指标信息 ▸');
+  const metricsBody = el('div', 'metrics-body') as HTMLDivElement;
+  metricsSection.append(metricsToggle, metricsBody);
+  metricsToggle.addEventListener('click', () => {
+    const expanded = metricsSection.classList.toggle('expanded');
+    metricsToggle.textContent = expanded ? '指标信息 ▾' : '指标信息 ▸';
+  });
 
   const toolbar = el('div', 'toolbar');
   const backBtn = el('button', 'tool-btn', '返回');
@@ -59,23 +67,30 @@ function buildUi(): { video: HTMLVideoElement; status: HTMLSpanElement } {
     void video.play().catch(() => { status.textContent = '播放被阻止，请再次点击开启声音'; });
   });
   toolbar.append(backBtn, homeBtn, audioBtn, status);
+  const diagSection = el('div', 'diag-section');
+  const diagToggle = el('button', 'diag-toggle', '连接诊断 ▸');
   const diagnostics = el('pre', 'diagnostics');
   diagnostics.id = 'diagnostics';
-  root.append(diagnostics);
+  diagSection.append(diagToggle, diagnostics);
+  diagToggle.addEventListener('click', () => {
+    const expanded = diagSection.classList.toggle('expanded');
+    diagToggle.textContent = expanded ? '连接诊断 ▾' : '连接诊断 ▸';
+  });
+  root.append(diagSection);
 
-  root.append(connectBar, stage, toolbar);
+  root.append(connectBar, metricsSection, stage, toolbar);
 
-  return { video, status };
+  return { video, status, metricsBody };
 }
 
 function main(): void {
-  const { video, status } = buildUi();
+  const { video, status, metricsBody } = buildUi();
 
   let frameCallback: number | null = null;
   let stopFirstFrameRecovery = (): void => {};
   let client: ScrcpyClient | null = null;
-  mountMetrics(video, () => client?.peerConnection ?? null);
-  mountLatencyMetrics(video, () => client?.peerConnection ?? null, () => client?.dataChannel ?? null);
+  mountMetrics(metricsBody, video, () => client?.peerConnection ?? null);
+  mountLatencyMetrics(metricsBody, () => client?.peerConnection ?? null, () => client?.dataChannel ?? null);
   let input: InputHandler | null = null;
   let dataChannel: RTCDataChannel | null = null;
 
@@ -83,7 +98,7 @@ function main(): void {
     return client?.sendControlMessage(payload) ?? false;
   };
 
-  const connect = async (url: string, restoring = false): Promise<void> => {
+  const connect = async (url: string): Promise<void> => {
     if (!url) {
       return;
     }
@@ -157,9 +172,8 @@ function main(): void {
 
     await client.connect({
       signalingUrl: url,
-      room: queryParam('room') ?? readResumeSession(url)?.room ?? 'default',
       iceTransportPolicy: queryParam('ice') === 'relay' ? 'relay' : 'all',
-      sessionToken: restoring ? '' : (document.querySelector('.token-input') as HTMLInputElement).value,
+      sessionToken: (document.querySelector('.token-input') as HTMLInputElement).value,
       iceServers: TURN_URL
         ? [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED }]
         : [],
@@ -175,10 +189,12 @@ function main(): void {
   });
 
   const restoreSession = (): void => {
+    const urlInput = document.querySelector('.url-input') as HTMLInputElement;
     const saved = readResumeSession();
-    if (!saved) { return; }
-    (document.querySelector('.url-input') as HTMLInputElement).value = saved.url;
-    void connect(saved.url, true).catch((error) => { client?.close(); status.textContent = String(error); });
+    const url = saved?.url ?? urlInput.value;
+    if (saved) { urlInput.value = saved.url; }
+    if (!url) { return; }
+    void connect(url).catch((error) => { client?.close(); status.textContent = String(error); });
   };
   window.addEventListener('pagehide', () => {
     stopFirstFrameRecovery();
