@@ -7,6 +7,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import warnings
+import zipfile
 
 root = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='streaming-tests-', suffix=' with spaces', dir=root / 'tests') as directory:
@@ -56,15 +58,18 @@ pathlib.Path(args[args.index('-o') + 1]).write_bytes(b'fake build output')
     for name, digest in manifest['files'].items():
         assert hashlib.sha256((work / name).read_bytes()).hexdigest() == digest
     assert 'server/src/main/jniLibs/arm64-v8a/libscrcpy_native.so' in manifest['files']
-    # Exercise the actual Gradle preparation entry without an Android SDK or native ABI toolchain.
-    prepare = server / 'tools/prepare_native.py'
-    library = server / 'src/main/jniLibs/arm64-v8a/libscrcpy_native.so'
-    manifest_path = server / 'native-build.json'
+    # Move artifacts between independent checkouts, including paths with spaces.
+    consumer = work / 'APK service' / 'server'
+    for relative in ('tools', 'src/main/cpp', 'src/main/java'):
+        shutil.copytree(server / relative, consumer / relative)
+    library = consumer / 'src/main/jniLibs/arm64-v8a/libscrcpy_native.so'
+    manifest_path = consumer / 'native-build.json'
+    bundle = work / 'transfer' / 'scrcpy native.zip'
     no_toolchain = {key: value for key, value in env.items()
-                    if key not in ('WEBRTC_ROOT', 'CLANG', 'ANDROID_SYSROOT', 'WEBRTC_REVISION')}
+                    if key not in ('WEBRTC_ROOT', 'CLANG', 'CLANG_LD', 'ANDROID_SYSROOT', 'WEBRTC_REVISION')}
 
-    def invoke(environment, *arguments, success=True):
-        result = subprocess.run(['python3', str(prepare), *arguments], env=environment,
+    def invoke(script, *arguments, environment=no_toolchain, success=True):
+        result = subprocess.run(['python3', str(script), *map(str, arguments)], env=environment,
                                 capture_output=True, text=True, check=False)
         assert (result.returncode == 0) == success, result.stdout + result.stderr
         return result
@@ -72,58 +77,101 @@ pathlib.Path(args[args.index('-o') + 1]).write_bytes(b'fake build output')
     def artifacts():
         return library.read_bytes(), manifest_path.read_bytes()
 
-    calls_before = log.read_text()
-    invoke(no_toolchain)
-    assert log.read_text() == calls_before, 'Matching artifacts must not invoke a compiler'
-    header = next((server / 'src/main/cpp').glob('*.h'))
-    header.write_text(header.read_text() + '// stale header test\n')
-    before = artifacts()
-    checked = invoke(env, '--check', success=False)
-    assert str(header.relative_to(work)) in checked.stderr and artifacts() == before
-    assert log.read_text() == calls_before, '--check must never rebuild'
-    missing = invoke(no_toolchain, success=False)
-    assert 'Missing environment variables: WEBRTC_ROOT, CLANG, ANDROID_SYSROOT, WEBRTC_REVISION' in missing.stderr
-    assert artifacts() == before and log.read_text() == calls_before
-    invoke(env)
-    assert log.read_text() != calls_before
-    invoke(no_toolchain, '--check')
-
-    # Missing library and missing/malformed manifests each require a real rebuild.
-    library.unlink()
-    invoke(env)
-    manifest_path.unlink()
-    invoke(env)
-    manifest_path.write_text('{invalid')
-    invoke(env)
-    invoke(no_toolchain, '--check')
-
-    # A removed file or changed build recipe must invalidate the earlier source inventory.
-    removed = next((server / 'src/main/cpp').glob('*.cc'))
-    removed_name = str(removed.relative_to(work))
-    removed.unlink()
-    invoke(env)
-    assert removed_name not in json.loads(manifest_path.read_text())['files']
+    exporter = server / 'tools/native_bundle.py'
+    importer = consumer / 'tools/native_bundle.py'
+    prepare = consumer / 'tools/prepare_native.py'
     builder = server / 'tools/build_native.py'
-    builder.write_text(builder.read_text() + '# changed build recipe test\n')
-    invoke(env)
-    revision_env = dict(env, WEBRTC_REVISION='test-revision-2')
-    invoke(revision_env)
-    assert json.loads(manifest_path.read_text())['webrtc_revision'] == 'test-revision-2'
-    env = revision_env
-
-    # Compile failure and edits during compilation cannot stamp a stale binary as current.
-    header.write_text(header.read_text() + '// force failed compile\n')
+    calls_before = log.read_text()
+    invoke(exporter, 'export', '--output', bundle)
+    invoke(importer, 'import', bundle)
     before = artifacts()
-    failed = invoke(dict(env, FAIL_NATIVE_TEST_BUILD='1'), success=False)
-    assert 'JNI rebuild failed' in failed.stderr and artifacts() == before
-    raced = invoke(dict(env, MUTATE_NATIVE_TEST_SOURCE=str(header)), success=False)
-    assert 'Native sources changed during compilation' in raced.stderr and artifacts() == before
-    invoke(env)
-    invoke(no_toolchain, '--check')
+    invoke(prepare)
+    # Ambient toolchain settings/revisions do not affect consumer-side verification.
+    invoke(prepare, '--check', environment=dict(env, WEBRTC_REVISION='unrelated-host-setting'))
+    assert log.read_text() == calls_before
+    header = next((consumer / 'src/main/cpp').glob('*.h'))
+    original_header = header.read_bytes()
+    header.write_bytes(original_header + b'// stale consumer header test\n')
+    failed = invoke(prepare, environment=env, success=False)
+    assert 'native build server' in failed.stderr
+    invoke(importer, 'import', bundle, environment=env, success=False)
+    assert artifacts() == before and log.read_text() == calls_before
+    header.write_bytes(original_header)
 
-    # Compiler exit success alone is insufficient: verify the generated source/artifact manifest again.
-    builder.write_text('print("no artifacts produced")\n')
-    noop = invoke(env, success=False)
-    assert 'did not produce matching artifacts' in noop.stderr
-print('Native preparation passed: fresh, stale, missing inputs/artifacts, recipe, inventory, revision, failure and concurrent edit paths')
+    removed = next((consumer / 'src/main/cpp').glob('*.cc'))
+    removed_contents = removed.read_bytes()
+    removed.unlink()
+    invoke(importer, 'import', bundle, success=False)
+    assert artifacts() == before
+    removed.write_bytes(removed_contents)
+    recipe = consumer / 'tools/build_native.py'
+    recipe.write_text(recipe.read_text() + '# changed recipe\n')
+    invoke(importer, 'import', bundle, success=False)
+    shutil.copyfile(builder, recipe)
+
+    # Reject corrupt, mixed, malformed and unsafe bundles before changing installed artifacts.
+    with zipfile.ZipFile(bundle) as archive:
+        pair = {name: archive.read(name) for name in archive.namelist()}
+    corrupt_manifest = json.loads(pair['native-build.json'])
+    corrupt_manifest['files']['server/src/main/jniLibs/arm64-v8a/libscrcpy_native.so'] = '0' * 64
+    cases = [
+        {**pair, 'libscrcpy_native.so': b'wrong library'},
+        {**pair, 'native-build.json': json.dumps(corrupt_manifest).encode()},
+        {**pair, 'native-build.json': b'null'},
+        {**pair, 'native-build.json': b'[]'},
+        {**pair, 'native-build.json': b'{invalid'},
+        {**pair, 'native-build.json': b' ' * (1024 * 1024 + 1)},
+        {**pair, '../outside': b'traversal'},
+        {'libscrcpy_native.so': pair['libscrcpy_native.so']},
+    ]
+    for index, entries in enumerate(cases):
+        bad = work / ('bad-%d.zip' % index)
+        with zipfile.ZipFile(bad, 'w') as archive:
+            for name, content in entries.items():
+                archive.writestr(name, content)
+        invoke(importer, 'import', bad, success=False)
+        assert artifacts() == before
+    assert not (work / 'outside').exists()
+    # Duplicate member names cannot bypass the exact pair requirement.
+    duplicate = work / 'duplicate.zip'
+    with zipfile.ZipFile(duplicate, 'w') as archive:
+        for name, content in pair.items():
+            archive.writestr(name, content)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            archive.writestr('libscrcpy_native.so', b'wrong library')
+    invoke(importer, 'import', duplicate, success=False)
+    assert artifacts() == before
+
+    # Missing/corrupt installed inputs fail closed even when a compiler is configured.
+    library.unlink()
+    invoke(prepare, environment=env, success=False)
+    invoke(importer, 'import', bundle)
+    manifest_path.unlink()
+    invoke(prepare, environment=env, success=False)
+    invoke(importer, 'import', bundle)
+    manifest_path.write_text('{invalid')
+    invoke(prepare, environment=env, success=False)
+    invoke(importer, 'import', bundle)
+    assert log.read_text() == calls_before, 'Consumer/import/export must never invoke the compiler'
+
+    # Export must not certify a stale build-server artifact either.
+    build_header = next((server / 'src/main/cpp').glob('*.h'))
+    build_header.write_text(build_header.read_text() + '// force failed compile\n')
+    original_bundle = bundle.read_bytes()
+    invoke(exporter, 'export', '--output', bundle, success=False)
+    assert bundle.read_bytes() == original_bundle
+    build_library = server / 'src/main/jniLibs/arm64-v8a/libscrcpy_native.so'
+    build_manifest = server / 'native-build.json'
+    build_before = build_library.read_bytes(), build_manifest.read_bytes()
+    invoke(builder, environment=dict(env, FAIL_NATIVE_TEST_BUILD='1'), success=False)
+    assert (build_library.read_bytes(), build_manifest.read_bytes()) == build_before
+    raced = invoke(builder, environment=dict(env, MUTATE_NATIVE_TEST_SOURCE=str(build_header)), success=False)
+    assert 'Native sources changed during compilation' in raced.stderr
+    assert (build_library.read_bytes(), build_manifest.read_bytes()) == build_before
+    invoke(builder, environment=env)
+    invoke(exporter, 'export', '--output', bundle)
+    # Consumers still need the matching checkout, even if the newer bundle itself is valid.
+    invoke(importer, 'import', bundle, success=False)
+print('Native delivery passed: separate checkouts, no consumer compilation, hashes, missing/corrupt artifacts, unsafe bundles, build failure and concurrent edits')
 print('Fake compiler only; no native ABI or Gradle runtime validation')

@@ -45,54 +45,68 @@ $CLANG --version
 
 ---
 
-## 3. 编译与链接（统一入口）
+## 3. 编译服务器：构建和导出 JNI
 
-当前使用内置 Opus 编码器；C++ 源码由构建脚本扫描，不再维护手写文件列表。
-Gradle 的 `merge*NativeLibs` 依赖 `prepareNativeLibrary`：先检查源码、构建脚本和 `.so` 的清单，
-一致则跳过编译；不一致时使用当前进程继承的工具链环境重建 JNI。缺少环境时停止并列出缺项。
-单独运行 Java test/lint 不会触发 native 重建。
+JNI 与 APK 分离构建。只有编译服务器需要匹配 libwebrtc 的工具链、NDK sysroot 和静态库。
+本服务的 Gradle 不编译、不下载 JNI，也不依赖 `WEBRTC_ROOT`、`CLANG` 等环境变量。
+当前使用内置 Opus 编码器；C++ 源码由构建脚本扫描。
 
-请先按第 5 节配置编译器运行时，再设置下面的环境变量。路径是历史机器示例，需替换为实际位置：
+编译服务器必须检出与 APK 服务匹配的 native 源码、Java JNI 桥和构建脚本。
+请先按第 5 节配置编译器运行时；以下路径为历史机器示例，替换为实际位置：
 
 ```bash
 export CLANG=/Users/gorilla/test/webrtc/clang-llvmorg-24-init-3796-g20e97c4b-2/bin/clang++
 export CLANG_LD="$(dirname "$CLANG")/ld.lld"
 export ANDROID_SYSROOT=/Users/gorilla/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/sysroot
 export WEBRTC_ROOT="$PWD/webrtc_materials"
-# 填写生成当前静态库的真实 libwebrtc 源码提交号；不要填写本仓库的提交号。
+# 填写生成静态库的真实 libwebrtc 源码提交号，不是本应用的提交号。
 export WEBRTC_REVISION='<libwebrtc 源码提交号>'
 python3 server/tools/build_native.py
+python3 server/tools/native_bundle.py export --output /path/to/scrcpy-native-arm64.zip
+```
+
+构建脚本使用 `--no-undefined`，生成 `.so` 与 `native-build.json`。编译期间源码变化会使构建失败，
+不发布该次产物。导出前再次校验源码与产物；ZIP 只包含 `libscrcpy_native.so` 和 `native-build.json`。
+通过现有 CI 制品库或文件传输渠道把 ZIP 交付给 APK 服务。两端工作目录可以不同，清单只使用仓库相对路径。
+
+## 4. APK 服务：导入、校验和部署
+
+在本服务检出对应代码后，从编译服务器取得上述 ZIP，再运行：
+
+```sh
+python3 server/tools/native_bundle.py import /path/to/scrcpy-native-arm64.zip
+python3 server/tools/prepare_native.py --check
 ./gradlew -p server assembleDebug
 ```
 
-## 4. 产物与部署
+导入工具先验证成员名称、数量、大小、清单格式、源码文件集合及所有 SHA-256，验证失败不覆盖现有产物。
+验证通过后写入：
 
-统一脚本链接时使用 --no-undefined，输出：
+- `server/src/main/jniLibs/arm64-v8a/libscrcpy_native.so`
+- `server/native-build.json`
 
-- server/src/main/jniLibs/arm64-v8a/libscrcpy_native.so（Gradle 打包输入）
-- server/native-build.json（源码及产物哈希校验清单）
+也可手动将编译服务器输出的这两个文件放到相同路径，再运行校验。
+不能仅把旧 `.so` 放进新源码目录，也不能在消费端根据旧 `.so` 重新生成清单。
+SHA-256 校验用于一致性检查；制品应通过可信的编译服务器和交付渠道获取。
 
-配置上述环境后，直接运行 `./gradlew -p server assembleDebug` 会按需重建 JNI。
-也可只检查：
-
-```sh
-python3 server/tools/prepare_native.py --check
-```
+`merge*NativeLibs` 依赖 `prepareNativeLibrary`，只验证预编译产物，失败时提示获取匹配的编译服务器制品。
+即使设置了 native 工具链环境变量也不会触发 JNI 编译。合并库前还会再次核对哈希。
+导入时的两个文件替换不构成文件系统事务；请先完成导入再启动打包。中断造成的不匹配会被打包校验拦截，重新导入即可。
 
 `p4/deploy.sh` 和 `p4/start-server.sh` 是被 Git 忽略的本地脚本，仓库不能保证其构建和启动流程。
-若使用本地 `deploy.sh --build`，它调用 Gradle 时必须继承这些 **export** 的环境变量。
+使用本地 `deploy.sh --build` 时，先导入匹配制品，再执行原命令即可；本服务无需配置 native 工具链。
 不要让本地脚本在校验后再用 `tmp/native` 中的旧 `.so` 覆盖 APK 内的库。
 
 ### `Stale native library` 的处理
 
 该报错表示头文件、C++ 源码、Java JNI 桥或产物与 `server/native-build.json` 不一致。
-它不意味着删除清单或执行 `gradle clean` 就能修好；不要手改哈希或关闭打包校验。
+例如报错提到 `scrcpy_peer_connection.h`，说明清单记录的头文件与当前检出内容不同。
+本次重构修改过 JNI 方法签名，旧库存在参数不兼容风险，不能绕过校验继续发布。
 
-旧版本在打包前只检查、不自动编译。更新包含 `prepareNativeLibrary` 的分支后，配置
-`WEBRTC_ROOT`、`CLANG`、`ANDROID_SYSROOT`、`WEBRTC_REVISION`，重新执行 Gradle 即可按需重建。
-暂不更新构建入口时，也可在仓库根目录先手动执行 `python3 server/tools/build_native.py`，成功后再打包。
-`WEBRTC_REVISION` 必须来自实际生成静态库的 libwebrtc 源码，不能填本应用的 Git 提交。
-编译期间若源码改变，构建会失败且不替换旧产物；重新构建即可。
+请让编译服务器使用匹配的代码重新编译并导出 ZIP，然后在本服务导入，再执行原部署命令。
+如果编译服务器已经生成了匹配产物，只需重新交付和导入，无需重复编译。
+删除清单、执行 `gradle clean`、手改哈希或关闭门禁都不能修复源码与二进制的不一致。
+仅凭一个未附原始构建清单的 `.so`，本服务无法确认其对应源码。
 
 `SIGNAL_TOKEN=""` 与 native 哈希报错无关。当前生产模式要求至少 32 字符的高熵凭证。
 空凭证只允许显式启动 `signal_debug=true` 的隔离调试；不能假定本地部署脚本支持同名环境变量。

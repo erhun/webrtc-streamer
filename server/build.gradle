@@ -42,10 +42,10 @@ def nativeVerificationFiles = files(
         'tools/build_native.py')
 
 // Packaging depends on verified JNI. Tests/lint do not require a native toolchain.
-// The verifier always runs but compiles only when sources, the recipe or the library changed.
+// Only verifies prebuilt artifacts from the native build server; never compiles or downloads JNI.
 def prepareNativeLibrary = tasks.register('prepareNativeLibrary', Exec) {
     workingDir nativeRepositoryDir
-    commandLine 'python3', new File(nativeRepositoryDir, 'server/tools/prepare_native.py').absolutePath
+    commandLine 'python3', new File(nativeRepositoryDir, 'server/tools/prepare_native.py').absolutePath, '--check'
 }
 
 tasks.configureEach { task ->

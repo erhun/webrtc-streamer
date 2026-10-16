@@ -11,7 +11,7 @@
 - 视频/PCM 的 Java payload 共享，避免逐观看者重复分配；新视频订阅等待参数集与 IDR。
 - 显式生产/调试接入、唯一房间授权、可配置 native 媒体端口、正确的 ICE 字段改写。
 - 删除外部 Opus 透传队列、旧单用户 admission 和重复 WebRTC packet sink。
-- 恢复 native 源码/库哈希打包门禁。
+- 恢复 native 源码/库哈希打包门禁；JNI 编译服务器交付配套库和清单，APK 服务仅导入和校验。
 
 ## 发布阻断项
 
