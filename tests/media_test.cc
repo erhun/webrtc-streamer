@@ -1,8 +1,21 @@
 #include "media_clock.h"
 #include "pcm_framer.h"
+#include "telemetry_gate.h"
 #include <cassert>
 #include <vector>
 int main() {
+    scrcpy::TelemetryGate telemetry;
+    assert(telemetry.Allow(0, 35000, 0));
+    assert(!telemetry.Allow(1000000, 35000, 0));
+    assert(!telemetry.Allow(4999999, 35000, 0));
+    assert(!telemetry.Allow(5000000, 35000, 1025)); // Input backlog takes precedence.
+    assert(telemetry.Allow(5000000, 35000, 0));
+    assert(telemetry.Allow(6000000, 8000000, 0)); // Healthy links regain the normal interval.
+    assert(!telemetry.Allow(6500000, 8000000, 0));
+    assert(telemetry.Allow(1, 8000000, 0)); // Monotonic clock epoch change.
+    telemetry.Reset();
+    assert(telemetry.Allow(1, 35000, 0));
+
     assert(scrcpy::MediaClock::Rtp90k(1000000) == 90000);
     assert(scrcpy::MediaClock::Rtp90k(33334) == 3000);
     assert(scrcpy::MediaClock::Rtp90k(16667) == 1500);

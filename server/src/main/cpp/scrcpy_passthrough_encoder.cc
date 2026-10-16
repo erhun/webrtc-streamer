@@ -126,7 +126,7 @@ void ScrcpyPassthroughEncoder::SetKeyFrameRequestCallback(std::function<void()> 
     key_frame_request_callback_ = std::move(callback);
 }
 
-void ScrcpyPassthroughEncoder::SetBitrateCallback(std::function<void(int, double)> callback) {
+void ScrcpyPassthroughEncoder::SetBitrateCallback(std::function<void(const webrtc::VideoEncoder::RateControlParameters&)> callback) {
     webrtc::MutexLock lock(&mutex_);
     bitrate_callback_ = std::move(callback);
 }
@@ -220,7 +220,7 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
 }
 
 void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters) {
-    std::function<void(int, double)> callback;
+    std::function<void(const webrtc::VideoEncoder::RateControlParameters&)> callback;
     std::function<void()> refresh;
     const int target_bps = parameters.bitrate.get_sum_bps();
 
@@ -236,7 +236,7 @@ void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters)
     // readiness alone does not mean VideoStreamEncoder is no longer paused.
     // Do not wait for Encode(delta) to discover the discarded startup IDR.
     // Java VideoAdaptationPolicy owns tier smoothing; pass the raw allocation through unchanged.
-    if (callback) { callback(target_bps, parameters.framerate_fps); }
+    if (callback) { callback(parameters); }
     if (refresh) {
         SCP_LOGE("First positive encoder rate: bps=%d; requesting fresh keyframe", target_bps);
         refresh();

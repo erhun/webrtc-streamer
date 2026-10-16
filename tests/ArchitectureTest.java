@@ -72,6 +72,18 @@ public final class ArchitectureTest {
         check(policy.budget() == 2000000, "Operator bitrate ceiling is enforced");
         policy.observe(0, 5000); policy.reset();
         check(policy.budget() == -1, "Peer replacement invalidates old observations");
+        VideoAdaptationPolicy capped = new VideoAdaptationPolicy(2000000);
+        for (long time = 0; time <= 60000; time += 1000) {
+            capped.observe(9000000, time);
+            check(capped.budget() == 2000000, "Encoding stays within the operator ceiling");
+            check(capped.current().getBitRate() <= 2000000, "Never select a tier beyond the operator ceiling");
+        }
+        check(capped.current().getMaxSize() == 960 && capped.current().getFps() == 30,
+                "Network headroom must permit the highest tier supported by the operator ceiling");
+        capped.observe(35000, 61000);
+        capped.tick(65000);
+        check(capped.budget() == 35000 && capped.current().getFps() == 10,
+                "A 35 kbps allocation is preserved and reaches the weak-link tier, never forced upward");
         PortMapConfig mapping = new PortMapConfig("203.0.113.10", 10001, 10004, 31001, 31004);
         String candidate = "candidate:10001 1 udp 2100011001 10.0.0.1 10001 typ host generation 0";
         String rewritten = SdpRewriter.rewriteIceCandidate(candidate, mapping);

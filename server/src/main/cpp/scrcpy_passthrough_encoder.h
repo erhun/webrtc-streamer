@@ -82,7 +82,7 @@ public:
     ~ScrcpyPassthroughEncoder() override;
 
     void SetKeyFrameRequestCallback(std::function<void()> callback);
-    void SetBitrateCallback(std::function<void(int, double)> callback);
+    void SetBitrateCallback(std::function<void(const webrtc::VideoEncoder::RateControlParameters&)> callback);
 
     int32_t InitEncode(const webrtc::VideoCodec* codec, const Settings& settings) override;
     int32_t RegisterEncodeCompleteCallback(webrtc::EncodedImageCallback* callback) override;
@@ -99,7 +99,7 @@ private:
     int callback_count_ = 0;
     webrtc::EncodedImageCallback* callback_ = nullptr;
     std::function<void()> key_frame_request_callback_;
-    std::function<void(int, double)> bitrate_callback_;
+    std::function<void(const webrtc::VideoEncoder::RateControlParameters&)> bitrate_callback_;
 };
 
 }

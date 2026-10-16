@@ -7,6 +7,7 @@
 #include "rtc_base/thread.h"
 
 #include "scrcpy_pcm_audio_source.h"
+#include "telemetry_gate.h"
 #include <cstdint>
 #include <functional>
 #include <atomic>
@@ -69,7 +70,11 @@ private:
     webrtc::scoped_refptr<EncodedVideoTrackSource> video_source_;
     std::atomic<int> allocated_bps_{-1};
     std::atomic<int> configured_bps_{-1};
+    std::atomic<int> target_bps_{-1};
+    std::atomic<int64_t> bandwidth_allocation_bps_{-1};
+    std::atomic<int64_t> rate_updated_us_{-1};
     bool stats_pending_ = false;
+    TelemetryGate telemetry_gate_;
     uint64_t recovery_generation_ = 0;
     bool recovering_ = false;
     bool remote_description_set_ = false;

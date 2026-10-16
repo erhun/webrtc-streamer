@@ -14,13 +14,13 @@ namespace scrcpy {
 
 class ScrcpyVideoEncoderFactory : public webrtc::VideoEncoderFactory {
 public:
-    ScrcpyVideoEncoderFactory(std::function<void(int, double)> bitrate, std::function<void()> keyframe)
+    ScrcpyVideoEncoderFactory(std::function<void(const webrtc::VideoEncoder::RateControlParameters&)> bitrate, std::function<void()> keyframe)
         : bitrate_(std::move(bitrate)), keyframe_(std::move(keyframe)) {}
     std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override;
     std::unique_ptr<webrtc::VideoEncoder> Create(const webrtc::Environment& env,
             const webrtc::SdpVideoFormat& format) override;
 private:
-    std::function<void(int, double)> bitrate_;
+    std::function<void(const webrtc::VideoEncoder::RateControlParameters&)> bitrate_;
     std::function<void()> keyframe_;
 };
 

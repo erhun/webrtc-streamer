@@ -12,7 +12,7 @@ public final class VideoAdaptationPolicy {
         new BitrateLadder.Level(1600, 60, 8000000),
         new BitrateLadder.Level(1920, 60, 12000000),
     };
-    private final BitrateLadder ladder = new BitrateLadder(CLOUD_PHONE_LEVELS, 1);
+    private final BitrateLadder ladder;
     private final int maximumBps;
     private int rawBps = -1;
     private double smoothedBps = -1;
@@ -21,10 +21,20 @@ public final class VideoAdaptationPolicy {
     public VideoAdaptationPolicy(int maximumBps) {
         if (maximumBps <= 0) { throw new IllegalArgumentException("Video bitrate must be positive"); }
         this.maximumBps = maximumBps;
+        int count = 1; // Retain the survival tier even below its nominal quality budget.
+        while (count < CLOUD_PHONE_LEVELS.length && CLOUD_PHONE_LEVELS[count].getBitRate() <= maximumBps) {
+            count++;
+        }
+        BitrateLadder.Level[] allowed = new BitrateLadder.Level[count];
+        System.arraycopy(CLOUD_PHONE_LEVELS, 0, allowed, 0, count);
+        ladder = new BitrateLadder(allowed, Math.min(1, count - 1));
     }
 
     public synchronized void observe(int bps, long nowMs) {
-        rawBps = Math.max(0, Math.min(bps, maximumBps));
+        // Keep observed headroom for hysteresis. Clamping observations to the operator
+        // ceiling made its own top tier unreachable (e.g. 2M < 2M * 1.12).
+        // Allowed tiers and budget() independently enforce the configured output ceiling.
+        rawBps = Math.max(0, bps);
         if (rawBps == 0 || smoothedBps < 0 || lastSampleMs < 0 || nowMs < lastSampleMs) {
             smoothedBps = rawBps;
         } else {
@@ -41,7 +51,7 @@ public final class VideoAdaptationPolicy {
     }
 
     public synchronized BitrateLadder.Level current() { return ladder.current(); }
-    public synchronized int budget() { return rawBps; }
+    public synchronized int budget() { return Math.min(rawBps, maximumBps); }
     public synchronized void reset() {
         rawBps = -1;
         smoothedBps = -1;
