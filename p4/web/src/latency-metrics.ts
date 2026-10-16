@@ -1,3 +1,5 @@
+import { attachMetricsBar } from './metrics-view';
+
 // Cumulative counters are differenced per stream/session, never per wall clock.
 export function meanDelta(sum: number, count: number, oldSum: number, oldCount: number, scale: number): number | null {
   if (![sum, count, oldSum, oldCount].every(Number.isFinite) || count <= oldCount || sum < oldSum) return null;
@@ -69,7 +71,7 @@ export function bufferHealth(send: number | null, receive: number | null,
 }
 
 export function mountLatencyMetrics(video: HTMLVideoElement,
-    getPeer: () => RTCPeerConnection | null, getChannel: () => RTCDataChannel | null): void {
+    getPeer: () => RTCPeerConnection | null, getChannel: () => RTCDataChannel | null, container?: HTMLElement): void {
   const bar = document.createElement('div');
   bar.className = 'stream-metrics';
   const labels = ['采集帧龄', '发送排队', '接收缓冲', '分配码率', '配置码率', '编码输出', '目标缓冲', '最低缓冲', '解码耗时',
@@ -90,7 +92,7 @@ export function mountLatencyMetrics(video: HTMLVideoElement,
     '距最近一次 SetRates 回调的单调时间；回调按变化触发，反馈龄高不代表链路故障',
     '发送端当前选中 ICE candidate-pair 的 availableOutgoingBitrate，可能包含音频和其他发送媒体；不是线路测速'];
   const nodes = labels.map((_, i) => { const n = document.createElement('span'); n.title = tips[i]; bar.append(n); return n; });
-  video.closest('.stage')!.before(bar);
+  if (!attachMetricsBar(video, bar, container)) return;
   const show = (i: number, value: number | null): void => {
     nodes[i].textContent = `${labels[i]}：${value === null ? '—' : i === 9 || i === 10 ? value.toFixed(1) + ' fps'
       : ((i < 3 || (i >= 6 && i <= 8) || i === 13) ? value.toFixed(1) + ' ms' : (value / 1000).toFixed(0) + ' kbps')}`;

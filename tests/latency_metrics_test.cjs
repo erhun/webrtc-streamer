@@ -85,7 +85,7 @@ const sent = [];
 const widgetChannel = {readyState:'open', bufferedAmount:0, addEventListener: (_name, callback) => {widgetMessage = callback;},
   removeEventListener() {}, send: value => sent.push(value)};
 const widgetPeer = {connectionState:'connected', getStats:async () => new Map()};
-mountLatencyMetrics({closest: () => ({before: node => {widgetBar = node;}})}, () => widgetPeer, () => widgetChannel);
+mountLatencyMetrics({}, () => widgetPeer, () => widgetChannel, {append: node => {widgetBar = node;}});
 (async () => {
   await widgetPoll();
   assert.equal(sent.length, 1);

@@ -89,8 +89,8 @@ function main(): void {
   let frameCallback: number | null = null;
   let stopFirstFrameRecovery = (): void => {};
   let client: ScrcpyClient | null = null;
-  mountMetrics(metricsBody, video, () => client?.peerConnection ?? null);
-  mountLatencyMetrics(metricsBody, () => client?.peerConnection ?? null, () => client?.dataChannel ?? null);
+  mountMetrics(video, () => client?.peerConnection ?? null, metricsBody);
+  mountLatencyMetrics(video, () => client?.peerConnection ?? null, () => client?.dataChannel ?? null, metricsBody);
   let input: InputHandler | null = null;
   let dataChannel: RTCDataChannel | null = null;
 

@@ -7,7 +7,6 @@ global.window = {setInterval: callback => {poll = callback; return 1;}, addEvent
 global.clearInterval = () => {};
 let callback, cancelled = false, bar;
 const video = {videoWidth: 480, videoHeight: 848,
-  closest: () => ({before: node => {bar = node;}}),
   requestVideoFrameCallback: observer => {callback = observer; return 7;},
   cancelVideoFrameCallback: id => {cancelled = id === 7;}};
 let frames = 0, timestamp = 0;
@@ -15,7 +14,7 @@ const peer = {connectionState:'connected', getStats: async () => new Map([['v', 
   id:'v', type:'inbound-rtp', kind:'video', timestamp,
   framesDecoded:frames, bytesReceived:frames*1000, packetsReceived:frames, packetsLost:0} ]])};
 let current = peer;
-mountMetrics(video, () => current);
+mountMetrics(video, () => current, {append: node => {bar = node;}});
 const text = index => bar.children[index].textContent;
 (async () => {
   callback(0, {presentedFrames:0});

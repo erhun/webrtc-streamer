@@ -1,3 +1,5 @@
+import { attachMetricsBar } from './metrics-view';
+
 export type QualityLevel = '' | 'good' | 'fair' | 'poor';
 
 // Packet-weighted rolling loss; never average percentages from unequal intervals.
@@ -44,7 +46,8 @@ export class ConnectionQualityWindow {
 }
 
 // Quality is an application estimate from RTT/loss, not radio RSSI.
-export function mountMetrics(video: HTMLVideoElement, getPeer: () => RTCPeerConnection | null): void {
+export function mountMetrics(video: HTMLVideoElement, getPeer: () => RTCPeerConnection | null,
+    container?: HTMLElement): void {
   const bar = document.createElement('div');
   bar.className = 'stream-metrics';
   bar.setAttribute('aria-label', '实时串流统计');
@@ -58,7 +61,7 @@ export function mountMetrics(video: HTMLVideoElement, getPeer: () => RTCPeerConn
   fields[3].node.className = 'quality';
   fields[3].node.title = '根据 RTT 与近 5 秒按包数加权的丢包率估算；至少 20 包，降级确认 2 秒、恢复确认 4 秒；不是无线信号强度或端到端体验评分';
   fields[5].node.title = '近 5 秒累计丢包增量 /（接收增量 + 丢包增量），包含迟到包对丢包计数的修正';
-  video.closest('.stage')!.before(bar);
+  if (!attachMetricsBar(video, bar, container)) return;
   const show = (values: string[], level = ''): void => {
     fields.forEach((field, i) => { field.node.textContent = `${field.label}：${values[i]}`; });
     fields[3].node.dataset.level = level;
