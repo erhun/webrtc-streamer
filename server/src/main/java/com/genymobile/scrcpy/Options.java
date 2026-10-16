@@ -27,7 +27,7 @@ public class Options {
     private int scid = -1; // 31-bit non-negative value, or -1
     private int signalPort;
     private String signalToken = "";
-    private String signalBind = "127.0.0.1";
+    private String signalBind = "0.0.0.0";
     private String signalRoom = "default";
     private boolean signalDebug;
     private int maxPeers = 10;

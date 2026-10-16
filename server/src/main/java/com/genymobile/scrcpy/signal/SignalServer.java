@@ -54,10 +54,10 @@ public final class SignalServer implements AutoCloseable {
     private volatile boolean listening;
 
     public SignalServer(int port, String token, int maxPeers, Listener listener) {
-        this("127.0.0.1", port, token, "default", maxPeers, listener, null);
+        this("0.0.0.0", port, token, "default", maxPeers, listener, null);
     }
     public SignalServer(int port, String token, int maxPeers, Listener listener, PortMapConfig portMapConfig) {
-        this("127.0.0.1", port, token, "default", maxPeers, listener, portMapConfig);
+        this("0.0.0.0", port, token, "default", maxPeers, listener, portMapConfig);
     }
     public SignalServer(String bind, int port, String token, String room, int maxPeers, Listener listener, PortMapConfig portMapConfig) {
         this.listener = listener;

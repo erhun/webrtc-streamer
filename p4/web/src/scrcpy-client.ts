@@ -54,8 +54,8 @@ export class ScrcpyClient {
       this.callbacks.onStateChange('failed'); this.callbacks.onError(message);
     };
     const url = new URL(options.signalingUrl);
-    if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) {
-      invalid('远程连接需要 wss:// 地址'); return;
+    if (url.protocol !== 'wss:' && url.protocol !== 'ws:') {
+      invalid('信令地址需要 ws:// 或 wss://'); return;
     }
     if (options.iceTransportPolicy === 'relay' && !options.iceServers.some(server => /^turns?:/i.test(server.urls))) {
       invalid('强制中继需要配置 TURN'); return;
