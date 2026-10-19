@@ -29,7 +29,7 @@ public final class RampProbeTest {
         BitrateRampProbe p = new BitrateRampProbe(500_000, 8_000_000, clean());
         p.onBudget(5_700_000, 0);
         check(p.probeBps() == 500_000, "No ramp before the first hold window elapses");
-        check(p.validatedBps() == 500_000, "The floor offer is validated once the budget holds");
+        check(p.validatedBps() == 0, "Nothing is validated until the first hold window settles");
         p.onBudget(5_700_000, 500);
         check(p.probeBps() == 500_000, "Still inside the hold window");
         p.onBudget(5_700_000, 1000);
@@ -98,12 +98,33 @@ public final class RampProbeTest {
                 "The tier climb aborts at the sustainable tier instead of cascading to the top");
     }
 
+    private static void testProbeEscapesApplicationLimitedStall() {
+        // The on-device failure: GoogCC is application-limited, so its estimate only reflects the offered
+        // load -- an encoder offering little keeps the estimate pinned at the ~30 kbps floor and the tier
+        // never leaves 480p/10fps. A probe capped at the current estimate can never escape. This probe must
+        // offer ABOVE the estimate to discover headroom and settle at the real capacity.
+        BitrateRampProbe p = new BitrateRampProbe(250_000, 8_000_000, clean());
+        int realCapacity = 3_000_000;
+        long t = 0;
+        for (int i = 0; i < 60; i++) {
+            int offered = p.probeBps();
+            // Application-limited estimate tracks the offer until the offer exceeds real capacity.
+            int observed = Math.min(realCapacity, (int) (offered * 1.1));
+            p.onBudget(observed, t);
+            t += 250; // sub-window sampling; clean() stepHoldMs = 1000
+        }
+        check(p.probeBps() > 1_000_000, "The probe climbs far above the pinned application-limited estimate");
+        check(p.probeBps() <= realCapacity + 500_000, "The probe settles near the real capacity, not the ceiling");
+        check(p.validatedBps() <= realCapacity, "Validated capacity never exceeds the real pipe");
+    }
+
     public static void main(String[] args) {
         testRampIsGradualNeverAJump();
         testCeilingClamp();
         testBreakSnapsToReality();
         testPauseAndClockRollback();
         testPolicyRejectsPhantomOvershoot();
-        System.out.println("Ramp probe regressions passed (5 scenarios)");
+        testProbeEscapesApplicationLimitedStall();
+        System.out.println("Ramp probe regressions passed (6 scenarios)");
     }
 }

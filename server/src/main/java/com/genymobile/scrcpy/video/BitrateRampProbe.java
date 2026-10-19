@@ -25,10 +25,21 @@ package com.genymobile.scrcpy.video;
 public final class BitrateRampProbe {
 
     public static final class Config {
-        /** Absolute ceiling on a single ramp step (bps). */
-        public int stepBps = 750_000;
-        /** Multiplicative ramp step; the smaller of this fraction and {@link #stepBps} bounds each ramp. */
-        public double stepFraction = 0.5;
+        /**
+         * Absolute ceiling on a single ramp step (bps). Bounds the additive increase at high rates so a
+         * step never shocks the encoder VBV / pacer with a burst that trips GoogCC's delay-based overuse.
+         */
+        public int stepBps = 250_000;
+        /**
+         * Proportional ramp step; the smaller of this fraction and {@link #stepBps} bounds each ramp. Kept
+         * deliberately gentle (~15%/window): an aggressive multiplicative jump (the prior 0.5) drove the
+         * encoder target up 50-100% every window, and each jump burst-queued the pacer -> delay overuse ->
+         * the budget collapsed back to the floor -> severe-break -> re-climb, a sawtooth that never let the
+         * estimate converge on a fast link (observed pinned ~250k on 100Mbps WiFi). A smooth offer lets the
+         * delay controller stay quiet so the estimate can climb toward real capacity (AIMD: gentle additive
+         * increase, snap-down on break).
+         */
+        public double stepFraction = 0.15;
         /** How long an offered rate is held (and measured) before ramping further or backing off. */
         public long stepHoldMs = 1500L;
         /**
@@ -37,6 +48,12 @@ public final class BitrateRampProbe {
          * to ride out GoogCC jitter, tight enough to catch a real collapse.
          */
         public double breakFactor = 0.85;
+        /**
+         * A budget below {@code offered * severeBreakFactor} is an unambiguous collapse (not jitter), so the
+         * offer backs off immediately rather than waiting out the window -- otherwise a real weak-network
+         * crash would keep being fed the full pre-collapse offer for up to {@link #stepHoldMs}.
+         */
+        public double severeBreakFactor = 0.5;
 
         public Config() {}
 
@@ -46,6 +63,7 @@ public final class BitrateRampProbe {
             c.stepFraction = stepFraction;
             c.stepHoldMs = stepHoldMs;
             c.breakFactor = breakFactor;
+            c.severeBreakFactor = severeBreakFactor;
             return c;
         }
     }
@@ -108,6 +126,17 @@ public final class BitrateRampProbe {
         // GoogCC's estimate lags an offer increase, so an instantaneous break would abort a valid climb.
         windowPeakBps = Math.max(windowPeakBps, rawBps);
 
+        // Fast path for an unambiguous collapse: the budget fell below half the offer, well past jitter.
+        // Require half a window since the last step so GoogCC's lag right after a ramp-up is not mistaken
+        // for a collapse; a genuine crash persists past that grace and is caught here, not a full window later.
+        if (nowMs - holdSinceMs >= config.stepHoldMs / 2 && rawBps < probeBps * config.severeBreakFactor) {
+            probeBps = Math.max(1, Math.min(rawBps, maxBps));
+            validatedBps = probeBps;
+            windowPeakBps = 0;
+            holdSinceMs = nowMs;
+            return;
+        }
+
         if (nowMs - holdSinceMs < config.stepHoldMs) {
             return;
         }
@@ -125,7 +154,9 @@ public final class BitrateRampProbe {
             validatedBps = confirmed;
             probeBps = Math.max(1, confirmed);
         }
-        windowPeakBps = rawBps;
+        // The boundary sample was already counted in this window's decision; start the next window empty
+        // so a stale high peak cannot mask a collapse that begins right after the boundary.
+        windowPeakBps = 0;
         holdSinceMs = nowMs;
     }
 
