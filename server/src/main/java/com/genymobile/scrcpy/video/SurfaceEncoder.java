@@ -64,6 +64,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
     private int latestBudgetBps = -1;
+    private long lastAdaptLogMs = Long.MIN_VALUE;
     private final VideoPipelineStats pipelineStats = new VideoPipelineStats();
     private boolean pendingKeyFrame;
     private boolean pendingPeerRefresh;
@@ -469,6 +470,12 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             latestBudgetBps = pendingBitrate;
             // Observe every feedback event, even if codec reset coalesces multiple callbacks.
             // Otherwise a short budget dip/zero can disappear before applyFeedback sees it.
+            long nowMs = SystemClock.elapsedRealtime();
+            if (lastAdaptLogMs == Long.MIN_VALUE || nowMs - lastAdaptLogMs >= 1000) {
+                lastAdaptLogMs = nowMs;
+                Ln.i("Adapt: in=" + bps + " target=" + pendingBitrate + " webFps=" + fps
+                        + " | " + adaptation.diagnostics());
+            }
         }
     }
 

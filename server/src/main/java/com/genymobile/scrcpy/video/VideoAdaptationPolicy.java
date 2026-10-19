@@ -50,6 +50,11 @@ public final class VideoAdaptationPolicy {
     public synchronized int budget() {
         return rawBps < 0 ? -1 : Math.min(probe.probeBps(), maximumBps);
     }
+    /** Compact one-line view of the control loop for on-device diagnosis: raw GoogCC budget vs the ramp probe vs the applied tier. */
+    public synchronized String diagnostics() {
+        return "raw=" + rawBps + " probe=" + probe.probeBps() + " validated=" + probe.validatedBps()
+                + " tier=" + ladder.getCurrentLevelIndex() + "/" + ladder.current();
+    }
     public synchronized void reset() {
         rawBps = -1;
         probe.reset();
