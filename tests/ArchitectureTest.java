@@ -67,21 +67,22 @@ public final class ArchitectureTest {
         VideoAdaptationPolicy policy = new VideoAdaptationPolicy(2000000);
         policy.observe(100000, 0);
         check(policy.current().getMaxSize() == 640, "A single-tier drop is debounced");
-        check(policy.tick(3000) && policy.current().getMaxSize() == 480, "Weak links reach a real low-resolution tier");
-        policy.observe(9000000, 4000);
-        check(policy.budget() == 2000000, "Operator bitrate ceiling is enforced");
-        policy.observe(0, 5000); policy.reset();
+        check(policy.tick(8000) && policy.current().getMaxSize() == 480, "Weak links reach a real low-resolution tier");
+        policy.observe(9000000, 9000);
+        check(policy.budget() <= 2000000, "The ramp probe never exceeds the operator bitrate ceiling");
+        policy.observe(0, 10000); policy.reset();
         check(policy.budget() == -1, "Peer replacement invalidates old observations");
         VideoAdaptationPolicy capped = new VideoAdaptationPolicy(2000000);
         for (long time = 0; time <= 60000; time += 1000) {
             capped.observe(9000000, time);
-            check(capped.budget() == 2000000, "Encoding stays within the operator ceiling");
+            check(capped.budget() <= 2000000, "Encoding stays within the operator ceiling");
             check(capped.current().getBitRate() <= 2000000, "Never select a tier beyond the operator ceiling");
         }
+        check(capped.budget() == 2000000, "Sustained headroom ramps the encoder up to the operator ceiling");
         check(capped.current().getMaxSize() == 960 && capped.current().getFps() == 30,
                 "Network headroom must permit the highest tier supported by the operator ceiling");
         capped.observe(35000, 61000);
-        capped.tick(65000);
+        capped.tick(66000);
         check(capped.budget() == 35000 && capped.current().getFps() == 10,
                 "A 35 kbps allocation is preserved and reaches the weak-link tier, never forced upward");
         PortMapConfig mapping = new PortMapConfig("203.0.113.10", 10001, 10004, 31001, 31004);

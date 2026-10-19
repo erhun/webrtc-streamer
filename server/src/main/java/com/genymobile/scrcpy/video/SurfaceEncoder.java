@@ -31,7 +31,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callback {
 
-    private static final int DEFAULT_I_FRAME_INTERVAL = 10; // 10秒 GOP，依靠 RTC PLI 动态请求关键帧
+    // WebRTC recovers loss via receiver-driven PLI/FIR, not periodic IDR (the device logs show zero PLIs
+    // in steady state). A short GOP was emitting a monolithic ~33KB IDR every 10s that overflowed the pacer
+    // and crashed the GoogCC budget (the sawtooth death spiral). 60s keeps a safety net against silent
+    // reference loss while cutting periodic IDR bursts 6x; join/resume/reset still force an immediate IDR.
+    private static final int DEFAULT_I_FRAME_INTERVAL = 60; // 60秒 GOP，关键帧依靠 RTC PLI 动态请求
     private static final String KEY_MAX_FPS_TO_ENCODER = "max-fps-to-encoder";
 
     private static final int[] MAX_SIZE_FALLBACK = {2560, 1920, 1600, 1280, 1024, 800, 640, 480, 320};
@@ -386,6 +390,22 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         // Periodic GOP; PLI may request an earlier IDR.
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, DEFAULT_I_FRAME_INTERVAL);
 
+        // Intra-refresh spreads keyframe macroblocks across ~1s of frames instead of emitting one
+        // large IDR (the NVENC/Sunshine/Stadia cloud-gaming standard). Best effort: the Inno VPU
+        // encoder on this device rejects it (ParamVideoIntraRefresh UnsupportedIndex 0x8000101a), so it
+        // is a no-op there and the vendor cap below is the real lever. Keep it for encoders that do
+        // honor it; a single IDR is still forced on join/resume/reset so a new viewer gets a clean picture.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            format.setInteger(MediaFormat.KEY_INTRA_REFRESH_PERIOD, Math.max(1, targetFps));
+        }
+
+        // The Inno VPU rejects KEY_INTRA_REFRESH_PERIOD (UnsupportedIndex) and its rc-control vendor
+        // extension cannot be driven piecemeal: setting only max-intra-pic-bit made ACodec push the whole
+        // rc-control struct with vbv_buffer_size=0, which fails CheckRateControlParamRange [10,100000] and
+        // logs "ENCODE_GOP_PARAM_INDEX failed" every frame -- and the cap never shrank an IDR anyway
+        // (480p IDRs stayed 11-29KB whether read as bits or bytes). Both levers are dead ends on this
+        // device, so neither is set; IDR bursts are handled by the ramp probe + WebRTC pacing instead.
+
         // Requested bitrate mode; actual frame cadence is controlled before encoding.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             format.setInteger(MediaFormat.KEY_BITRATE_MODE,
@@ -534,10 +554,13 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 keyFrame |= suspended;
                 suspended = false;
 
-                // Apply the latest encoder budget directly within this tier. An application ramp
-                // driven only by SetRates can stall forever when the allocation stops changing.
-                // Resolution/fps upgrades remain guarded by BitrateLadder; RTP pacing stays in WebRTC.
-                int targetBitrate = Math.max(1, Math.min(bps, level.getBitRate()));
+                // The ramp probe owns the encoder target: bps is already min(probeBps, operator ceiling),
+                // so the encoder genuinely offers the ramped rate and stresses the pipe. Capping to the
+                // next tier's nominal rate decoupled probeBps from the actual offer, kept the link
+                // application-limited, and let GoogCC's phantom ALR budget validate a probe that was never
+                // sent — which drove the upgrade cascade. Resolution/fps remain guarded by BitrateLadder;
+                // RTP pacing stays in WebRTC.
+                int targetBitrate = Math.max(1, bps);
                 float nextFps = requestedMaxFps > 0
                         ? Math.min(requestedMaxFps, level.getFps())
                         : level.getFps();

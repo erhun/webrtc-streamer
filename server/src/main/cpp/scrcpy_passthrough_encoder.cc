@@ -252,6 +252,15 @@ ScrcpyPassthroughEncoder::EncoderInfo ScrcpyPassthroughEncoder::GetEncoderInfo()
     // below the Java ladder's 1200 kbps upgrade threshold).
     info.scaling_settings = webrtc::VideoEncoder::ScalingSettings(webrtc::VideoEncoder::ScalingSettings::kOff);
     info.is_qp_trusted = false;
+    // MediaCodec is the real rate controller (CBR, driven by GoogCC via SetRates -> setParameters),
+    // and it encodes frames BEFORE WebRTC ever sees them: OnEncodedFrame hands already-encoded H.264
+    // to VideoStreamEncoder as kNative frames. WebRTC's media-optimization frame_dropper_ is a leaky
+    // bucket keyed on encoded size vs target; if it drops one of these pre-encoded frames it silently
+    // breaks the H.264 reference chain (delta frames depend on it), corrupting the decode and triggering
+    // a PLI storm. Declaring a trusted rate controller disables that dropper so WebRTC never discards a
+    // reference frame it does not understand. Overshoot is bounded at the source instead: CBR + the
+    // ~1s intra-refresh (no large IDR bursts) keep MediaCodec's output close to target.
+    info.has_trusted_rate_controller = true;
     // This is a capability ceiling, NOT a requested or minimum sending rate.
     // The Java ladder owns resolution adaptation and still clamps MediaCodec
     // output targets to SetRates. Equal endpoints keep interpolation flat;

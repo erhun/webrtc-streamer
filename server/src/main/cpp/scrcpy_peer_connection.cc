@@ -201,9 +201,16 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         // content-dependent output rate.
         // Request a small playout delay range. This is a receiver hint, not a
         // guarantee that measured or target jitter-buffer delay stays below 100ms.
+        // FastRetransmissions lets RTX packets jump the pacer queue so NACK recovery
+        // completes in ~1 RTT instead of waiting behind queued media; this lowers the
+        // residual loss the decoder sees and cuts PLI re-requests on a lossy path.
+        // (WebRTC-Pacer-KeyframeFlushing is not parsed by this libwebrtc revision, so
+        // it is intentionally omitted; large-IDR bursts are removed at the source via
+        // MediaCodec intra-refresh instead.)
         static webrtc::FieldTrials field_trials(
                 "WebRTC-VideoRateControl/alr_probing:true/"
-                "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/");
+                "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/"
+                "WebRTC-Pacer-FastRetransmissions/Enabled/");
         auto env = webrtc::CreateEnvironment(&field_trials);
         deps.env = env;
         deps.adm = webrtc::CreateAudioDeviceModule(env, webrtc::AudioDeviceModule::kDummyAudio);

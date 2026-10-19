@@ -5,18 +5,17 @@ public final class VideoAdaptationPolicy {
     public static final BitrateLadder.Level[] CLOUD_PHONE_LEVELS = {
         new BitrateLadder.Level(480, 10, 250000),
         new BitrateLadder.Level(640, 15, 500000),
-        new BitrateLadder.Level(854, 24, 1200000),
-        new BitrateLadder.Level(960, 30, 2000000),
-        new BitrateLadder.Level(1280, 30, 4000000),
-        new BitrateLadder.Level(1280, 60, 6000000),
-        new BitrateLadder.Level(1600, 60, 8000000),
-        new BitrateLadder.Level(1920, 60, 12000000),
+        new BitrateLadder.Level(854, 24, 800000),
+        new BitrateLadder.Level(960, 30, 1200000),
+        new BitrateLadder.Level(1280, 30, 3000000),
+        new BitrateLadder.Level(1280, 60, 3000000),
+        new BitrateLadder.Level(1600, 60, 4000000),
+        new BitrateLadder.Level(1920, 60, 6000000),
     };
     private final BitrateLadder ladder;
+    private final BitrateRampProbe probe;
     private final int maximumBps;
     private int rawBps = -1;
-    private double smoothedBps = -1;
-    private long lastSampleMs = -1;
 
     public VideoAdaptationPolicy(int maximumBps) {
         if (maximumBps <= 0) { throw new IllegalArgumentException("Video bitrate must be positive"); }
@@ -27,35 +26,33 @@ public final class VideoAdaptationPolicy {
         }
         BitrateLadder.Level[] allowed = new BitrateLadder.Level[count];
         System.arraycopy(CLOUD_PHONE_LEVELS, 0, allowed, 0, count);
-        ladder = new BitrateLadder(allowed, Math.min(1, count - 1));
+        int initialLevel = Math.min(1, count - 1);
+        ladder = new BitrateLadder(allowed, initialLevel);
+        // Ramp the encoder offer up from the initial tier's nominal rate, never past the operator ceiling.
+        // Upgrades read the probe's validated capacity, not GoogCC's application-limited budget, so a
+        // stably inflated estimate can no longer promote tiers the pipe cannot actually sustain.
+        probe = new BitrateRampProbe(allowed[initialLevel].getBitRate(), maximumBps, new BitrateRampProbe.Config());
     }
 
     public synchronized void observe(int bps, long nowMs) {
-        // Keep observed headroom for hysteresis. Clamping observations to the operator
-        // ceiling made its own top tier unreachable (e.g. 2M < 2M * 1.12).
-        // Allowed tiers and budget() independently enforce the configured output ceiling.
         rawBps = Math.max(0, bps);
-        if (rawBps == 0 || smoothedBps < 0 || lastSampleMs < 0 || nowMs < lastSampleMs) {
-            smoothedBps = rawBps;
-        } else {
-            // One-second time constant. Behavior is independent of SetRates callback frequency.
-            double alpha = 1 - Math.exp(-(nowMs - lastSampleMs) / 1000.0);
-            smoothedBps += alpha * (rawBps - smoothedBps);
-        }
-        lastSampleMs = nowMs;
-        ladder.update(rawBps, (int) smoothedBps, nowMs, true);
+        probe.onBudget(rawBps, nowMs);
+        // rawBps drives downgrades (congestion answered immediately); validatedBps gates upgrades.
+        ladder.update(rawBps, probe.validatedBps(), nowMs, true);
     }
 
     public synchronized boolean tick(long nowMs) {
-        return rawBps > 0 && ladder.update(rawBps, (int) smoothedBps, nowMs, false);
+        return rawBps > 0 && ladder.update(rawBps, probe.validatedBps(), nowMs, false);
     }
 
     public synchronized BitrateLadder.Level current() { return ladder.current(); }
-    public synchronized int budget() { return Math.min(rawBps, maximumBps); }
+    /** Ramped encoder target: follows the probe's validated offer, bounded by the operator ceiling. -1 before any observation. */
+    public synchronized int budget() {
+        return rawBps < 0 ? -1 : Math.min(probe.probeBps(), maximumBps);
+    }
     public synchronized void reset() {
         rawBps = -1;
-        smoothedBps = -1;
-        lastSampleMs = -1;
+        probe.reset();
         ladder.resetFeedback();
     }
 }

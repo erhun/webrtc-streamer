@@ -2,6 +2,7 @@ import com.genymobile.scrcpy.audio.ShellAudioWorkaround;
 import com.genymobile.scrcpy.video.BitrateAggregator;
 import com.genymobile.scrcpy.video.BitrateLadder;
 import com.genymobile.scrcpy.video.FrameRateLimiter;
+import com.genymobile.scrcpy.video.VideoAdaptationPolicy;
 import com.genymobile.scrcpy.device.NativeEncoderBridge;
 
 public final class FramePipelineTest {
@@ -44,7 +45,7 @@ public final class FramePipelineTest {
     }
 
     private static void testCachedBudgetRecovery() {
-        BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
+        BitrateLadder ladder = new BitrateLadder(VideoAdaptationPolicy.CLOUD_PHONE_LEVELS, 0);
         // One external allocation, followed by encoder-thread clock ticks re-feeding that same cached budget.
         check(!ladder.update(8_000_000, 8_000_000, 0, true), "Fresh allocation starts a candidate");
         check(!ladder.update(8_000_000, 8_000_000, 6000, false), "A cached tick must not complete the upgrade window");
@@ -53,11 +54,18 @@ public final class FramePipelineTest {
         check(ladder.getCurrentLevelIndex() == 1, "Upgrade is single-step");
 
         // Congestion must stay responsive even when it arrives on a cached (non-fresh) encoder tick.
-        BitrateLadder congested = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 3);
-        check(congested.update(100_000, 100_000, 5000, false), "Severe congestion downgrades without a fresh event");
+        // Resolution downgrade is now debounced (the encoder bitrate already absorbed the congestion
+        // with no codec reset), but cached ticks still advance the downgrade window, so a sustained
+        // collapse commits without waiting for a fresh SetRates event. Pin the debounce independently of
+        // production tuning so this stays a cached-tick test, not a timing-constants test.
+        BitrateLadder.Config congestedConfig = new BitrateLadder.Config();
+        congestedConfig.severeDowngradeStableMs = 1200;
+        BitrateLadder congested = new BitrateLadder(VideoAdaptationPolicy.CLOUD_PHONE_LEVELS, 3, congestedConfig);
+        check(!congested.update(100_000, 100_000, 5000, false), "A single cached congestion tick must not reset the codec");
+        check(congested.update(100_000, 100_000, 6300, false), "Sustained severe congestion downgrades on cached ticks alone");
         check(congested.getCurrentLevelIndex() == 0, "Severe congestion reaches the lowest tier");
 
-        BitrateLadder paused = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 0);
+        BitrateLadder paused = new BitrateLadder(VideoAdaptationPolicy.CLOUD_PHONE_LEVELS, 0);
         paused.update(8_000_000, 0);
         paused.update(0, 5000);
         check(!paused.update(8_000_000, 6000), "Raw zero cancels the old candidate");
@@ -65,11 +73,11 @@ public final class FramePipelineTest {
     }
 
     private static void testSmoothedSpikeDoesNotUpgrade() {
-        // Reproduces the production limit cycle: WebRTC BWE swings 2.6M <-> 6.8M as the encoder loads the pipe.
+        // Reproduces the production limit cycle: WebRTC BWE swings as the encoder loads the pipe.
         // Upgrades read the EMA-smoothed budget, so a raw probe spike the smoothing has not confirmed cannot promote.
-        BitrateLadder ladder = new BitrateLadder(BitrateLadder.DEFAULT_LEVELS, 1); // 960p; upgrade needs smoothed > 4.48M
+        BitrateLadder ladder = new BitrateLadder(VideoAdaptationPolicy.CLOUD_PHONE_LEVELS, 1); // 640 tier; upgrade needs smoothed > 896k
         for (long t = 0; t <= 12_000; t += 1000) {
-            check(!ladder.update(6_800_000, 3_000_000, t, true), "A damped smoothed budget must not promote a tier");
+            check(!ladder.update(6_800_000, 700_000, t, true), "A damped smoothed budget must not promote a tier");
         }
         check(ladder.getCurrentLevelIndex() == 1, "Raw spike alone cannot upgrade while the smoothed budget stays low");
         // A genuinely sustained high smoothed budget across fresh events still upgrades one step.

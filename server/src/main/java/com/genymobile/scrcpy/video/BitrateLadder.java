@@ -39,17 +39,9 @@ public final class BitrateLadder {
         }
     }
 
-    // ==================== 默认档位 ====================
-    public static final Level[] DEFAULT_LEVELS = {
-            new Level(854, 24, 1_200_000),
-            new Level(960, 30, 2_000_000),
-            new Level(1280, 30, 4_000_000),
-            new Level(1280, 60, 6_000_000),
-            new Level(1600, 60, 8_000_000),
-            new Level(1920, 60, 12_000_000),
-    };
-
     // ==================== 可配置参数 ====================
+    // The production tier table lives in VideoAdaptationPolicy.CLOUD_PHONE_LEVELS (single source of truth);
+    // BitrateLadder is table-agnostic and every caller must pass an explicit ladder.
     public static final class Config {
         /** 带宽低于当前档码率 * downscaleFactor 时触发降档 */
         public double downscaleFactor = 0.78;
@@ -57,10 +49,17 @@ public final class BitrateLadder {
         public double upscaleFactor = 1.12;
         /** 升档防抖：需稳定维持的毫秒数 */
         public long upgradeStableMs = 6000L;
-        /** 常规降档防抖：需持续低于阈值的毫秒数（平衡防抖与响应速度） */
-        public long downgradeStableMs = 3000L;
-        /** 严重降档（跨 ≥2 级）的最小冷却间隔 */
-        public long severeDowngradeCooldownMs = 1000L;
+        /**
+         * 常规降档防抖：需持续低于阈值的毫秒数。码率连续跟随 GoogCC 已即时吸收拥塞（零 codec reset），
+         * 分辨率降档是最后手段，必须拉长去抖窗口，避免被 IDR 突发诱发的瞬时塌陷拖入
+         * 854→640→480 连环 reset 死亡螺旋。
+         */
+        public long downgradeStableMs = 8000L;
+        /**
+         * 严重降档（跨 ≥2 级）需持续维持的毫秒数。同样是最后手段：瞬时塌陷由码率吸收、level 不动，
+         * 只有持续数秒的真崩溃才触发一次跨级下调（computeDowngradeLevel 一步到底，单次 reset）。
+         */
+        public long severeDowngradeStableMs = 5000L;
         /** 档位切换后的最小保持时间：防止短时间内连续切换 */
         public long minHoldAfterChangeMs = 5000L;
 
@@ -72,7 +71,7 @@ public final class BitrateLadder {
             c.upscaleFactor = upscaleFactor;
             c.upgradeStableMs = upgradeStableMs;
             c.downgradeStableMs = downgradeStableMs;
-            c.severeDowngradeCooldownMs = severeDowngradeCooldownMs;
+            c.severeDowngradeStableMs = severeDowngradeStableMs;
             c.minHoldAfterChangeMs = minHoldAfterChangeMs;
             return c;
         }
@@ -104,10 +103,6 @@ public final class BitrateLadder {
     private OnLevelChangeListener listener;
 
     // ==================== 构造 ====================
-    public BitrateLadder() {
-        this(DEFAULT_LEVELS, DEFAULT_LEVELS.length / 2, new Config());
-    }
-
     public BitrateLadder(Level[] levels) {
         this(levels, levels.length / 2, new Config());
     }
@@ -216,36 +211,34 @@ public final class BitrateLadder {
         }
 
         // ---------- 降级路径 ----------
+        // 分辨率降档现在是质量优化，不再是拥塞响应：编码码率已连续跟随 GoogCC（不重建 codec），
+        // 因此单次瞬时尖峰绝不能触发 codec reset。普通与严重降档都要求低预算持续维持；严重塌陷
+        // 用更短的窗口，保证真实带宽丢失仍能较快跨级下调。这是 Schmitt 触发的时域半边（值域半边是
+        // downscaleFactor vs upscaleFactor），也是消除档位震荡的关键。
         if (isDowngrade) {
             upgradeSinceMs = -1;
             newLevel = downgradeTarget;
+            long requiredStableMs = isSevereDowngrade
+                    ? config.severeDowngradeStableMs
+                    : config.downgradeStableMs;
 
-            if (isSevereDowngrade) {
-                // 严重降档：仅受冷却约束，快速响应
-                if (lastChangeMs != Long.MIN_VALUE
-                        && (nowMs - lastChangeMs < config.severeDowngradeCooldownMs)) {
+            // 只要目标档位 <= 当前缓存目标位，就继续计时（容忍档位边界抖动）
+            if (targetDowngradeLevel < 0 || newLevel < targetDowngradeLevel) {
+                // 目标位下移（更严重）→ 重置计时并更新目标
+                targetDowngradeLevel = newLevel;
+                downgradeSinceMs = nowMs;
+                return false;
+            } else if (newLevel == targetDowngradeLevel) {
+                // 同一目标位，需持续满足窗口才提交
+                if (nowMs - downgradeSinceMs < requiredStableMs) {
                     return false;
                 }
             } else {
-                // 常规单级降档：防抖
-                // 优化点：只要目标档位 <= 当前缓存目标位，就继续计时（容忍档位边界抖动）
-                if (targetDowngradeLevel < 0 || newLevel < targetDowngradeLevel) {
-                    // 目标位下移（更严重）→ 重置计时并更新目标
-                    targetDowngradeLevel = newLevel;
-                    downgradeSinceMs = nowMs;
-                    return false;
-                } else if (newLevel == targetDowngradeLevel) {
-                    // 同一目标位，继续累计
-                    if (nowMs - downgradeSinceMs < config.downgradeStableMs) {
-                        return false;
-                    }
-                } else {
-                    // newLevel > targetDowngradeLevel：带宽回升到目标位之上，但仍在降档区间
-                    // 这种情况下不执行降档，取消候选
-                    targetDowngradeLevel = -1;
-                    downgradeSinceMs = -1;
-                    return false;
-                }
+                // newLevel > targetDowngradeLevel：带宽回升到目标位之上，但仍在降档区间
+                // 这种情况下不执行降档，取消候选，避免为一个 blip 重建 codec
+                targetDowngradeLevel = -1;
+                downgradeSinceMs = -1;
+                return false;
             }
         } else {
             downgradeSinceMs = -1;
