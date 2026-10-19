@@ -98,6 +98,62 @@ public final class RampProbeTest {
                 "The tier climb aborts at the sustainable tier instead of cascading to the top");
     }
 
+    private static void testCongestionMemoryStopsSawtooth() {
+        // The stable-network sawtooth: GoogCC reads a phantom budget that tracks the offer until the offer
+        // crosses real capacity, then cliffs. Without congestion memory the probe re-ramps toward the operator
+        // ceiling and re-crosses capacity at the same point every cycle (observed: offer rocketed to ~4M at
+        // 960p, estimate cliffed to ~400k, downgrade, slow re-climb, repeat ~80s). With ssthresh the offer
+        // must converge near real capacity and never re-overshoot to the original cliff point.
+        BitrateRampProbe p = new BitrateRampProbe(500_000, 8_000_000, clean());
+        int realCapacity = 2_000_000;
+        long t = 0;
+        int firstBreakOffer = -1;
+        int peakAfterBreak = 0;
+        for (int i = 0; i < 400; i++) {
+            int offered = p.probeBps();
+            // Application-limited phantom: the estimate tracks (inflated) while the offer is under capacity,
+            // and cliffs to a fraction of capacity the moment the offer exceeds it.
+            int observed = (offered > realCapacity) ? realCapacity / 4 : Math.min(realCapacity * 2, offered * 2);
+            if (firstBreakOffer < 0 && offered > realCapacity) {
+                firstBreakOffer = offered;
+            }
+            p.onBudget(observed, t);
+            t += 1000; // clean() stepHoldMs = 1000, one hold window per sample
+            if (firstBreakOffer > 0) {
+                peakAfterBreak = Math.max(peakAfterBreak, p.probeBps());
+            }
+        }
+        check(firstBreakOffer > realCapacity, "The first climb overshot real capacity before any ssthresh existed");
+        check(peakAfterBreak <= firstBreakOffer / 2 + 500_000,
+                "Congestion memory stops the offer re-overshooting to the original cliff point");
+        check(peakAfterBreak <= realCapacity * 2,
+                "The offer converges near real capacity instead of sawtoothing to the operator ceiling");
+    }
+
+    private static void testAlrFloorBreaksDoNotPoisonSsthresh() {
+        // Startup/idle is application-limited: static content produces few bits, so GoogCC's estimate sits at
+        // the ~30 kbps WebRTC floor and severe-breaks fire repeatedly at a tiny offer. That is ALR noise, not
+        // congestion. If it lowered ssthresh, the probe would be capped at the floor and never cross the tier
+        // upgrade threshold -- the "fps stuck at 10" regression. ssthresh must survive the ALR phase intact so
+        // the probe can still ramp to real capacity once motion returns.
+        BitrateRampProbe p = new BitrateRampProbe(500_000, 8_000_000, clean());
+        long t = 0;
+        for (int i = 0; i < 40; i++) {
+            // Offer pinned low, estimate at the ALR floor: raw(30k) < probe*0.5 triggers severe-break each window.
+            p.onBudget(30_000, t);
+            t += 1000;
+        }
+        check(p.ssthreshBps() == 8_000_000,
+                "ALR-floor breaks at a sub-floor offer leave ssthresh untouched (no premature cap)");
+        // Once motion drives the estimate up, the probe must still be free to ramp toward the ceiling.
+        for (int i = 0; i < 6; i++) {
+            p.onBudget(5_700_000, t);
+            t += 1000;
+        }
+        check(p.probeBps() > 500_000, "After the ALR phase the probe ramps above the floor toward real capacity");
+        check(p.ssthreshBps() == 8_000_000, "Ramping under headroom never lowers ssthresh");
+    }
+
     private static void testProbeEscapesApplicationLimitedStall() {
         // The on-device failure: GoogCC is application-limited, so its estimate only reflects the offered
         // load -- an encoder offering little keeps the estimate pinned at the ~30 kbps floor and the tier
@@ -124,7 +180,9 @@ public final class RampProbeTest {
         testBreakSnapsToReality();
         testPauseAndClockRollback();
         testPolicyRejectsPhantomOvershoot();
+        testCongestionMemoryStopsSawtooth();
+        testAlrFloorBreaksDoNotPoisonSsthresh();
         testProbeEscapesApplicationLimitedStall();
-        System.out.println("Ramp probe regressions passed (6 scenarios)");
+        System.out.println("Ramp probe regressions passed (8 scenarios)");
     }
 }

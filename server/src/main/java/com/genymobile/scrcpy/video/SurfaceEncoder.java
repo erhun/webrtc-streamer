@@ -604,8 +604,13 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
 
         // ============ 合并 reset 判断，避免重复 reset ============
         if (needCodecReset || firstFrameRefresh || bootstrapRefresh || captureRefresh) {
+            // reset() signals EOS on the running codec, so the outer loop recreates a fresh MediaCodec whose
+            // first output frame is already SPS/PPS + IDR. Do NOT also set pendingKeyFrame: after the reset is
+            // consumed, the next applyFeedback would fire PARAMETER_KEY_REQUEST_SYNC_FRAME on the new codec,
+            // emitting a SECOND IDR a few hundred ms after the reset's own. That double-IDR burst shocks the
+            // pacer -> GoogCC delay-based overuse -> estimate collapse -> downgrade -> another reset, which is
+            // the oscillation amplifier observed on a stable network. The reset itself is the keyframe source.
             captureControl.reset(CaptureControl.RESET_REASON_BITRATE_CHANGED);
-            synchronized (feedbackLock) { pendingKeyFrame = true; }
             return;
         }
 

@@ -54,6 +54,16 @@ public final class BitrateRampProbe {
          * crash would keep being fed the full pre-collapse offer for up to {@link #stepHoldMs}.
          */
         public double severeBreakFactor = 0.5;
+        /**
+         * Congestion memory (TCP-Reno ssthresh). On a break the offer that broke is multiplied by this and
+         * remembered as a soft ceiling the fast ramp will not cross again. Without it the probe re-ramps to
+         * the operator ceiling every cycle and re-crosses real capacity at the same point, so GoogCC cliffs,
+         * the probe severe-breaks, the tier downgrades, and the whole climb repeats -- the sawtooth observed
+         * on a stable network (offer rocketed to ~4M at 960p, estimate cliffed to ~400k, rinse/repeat ~80s).
+         * Halving matches multiplicative-decrease: the breaking offer overshot real capacity, so half of it
+         * lands near what the pipe actually sustains and the loop converges instead of oscillating.
+         */
+        public double ssthreshFactor = 0.5;
 
         public Config() {}
 
@@ -64,6 +74,7 @@ public final class BitrateRampProbe {
             c.stepHoldMs = stepHoldMs;
             c.breakFactor = breakFactor;
             c.severeBreakFactor = severeBreakFactor;
+            c.ssthreshFactor = ssthreshFactor;
             return c;
         }
     }
@@ -75,6 +86,7 @@ public final class BitrateRampProbe {
     private int probeBps;
     private int validatedBps;
     private int windowPeakBps;
+    private int ssthreshBps;
     private long holdSinceMs = -1;
     private long lastMs = Long.MIN_VALUE;
 
@@ -95,6 +107,7 @@ public final class BitrateRampProbe {
         this.probeBps = Math.min(floorBps, maxBps);
         this.validatedBps = 0;
         this.windowPeakBps = 0;
+        this.ssthreshBps = maxBps; // No congestion memory yet: the first climb may slow-start to the ceiling.
     }
 
     /**
@@ -130,6 +143,7 @@ public final class BitrateRampProbe {
         // Require half a window since the last step so GoogCC's lag right after a ramp-up is not mistaken
         // for a collapse; a genuine crash persists past that grace and is caught here, not a full window later.
         if (nowMs - holdSinceMs >= config.stepHoldMs / 2 && rawBps < probeBps * config.severeBreakFactor) {
+            rememberCongestion(probeBps);
             probeBps = Math.max(1, Math.min(rawBps, maxBps));
             validatedBps = probeBps;
             windowPeakBps = 0;
@@ -144,13 +158,18 @@ public final class BitrateRampProbe {
         // Window settled: judge the offered rate against the peak budget the pipe delivered this window.
         int confirmed = Math.min(probeBps, windowPeakBps);
         if (windowPeakBps >= probeBps * config.breakFactor) {
-            // The pipe sustained the offer: it is validated capacity, so probe one bounded step higher
-            // toward the operator ceiling to discover headroom.
+            // The pipe sustained the offer: it is validated capacity, so probe one bounded step higher to
+            // discover headroom -- but never past ssthresh, the offer that last congested the pipe. Capping
+            // here is what stops the sawtooth: without it the probe re-climbs to the operator ceiling every
+            // cycle and re-crosses real capacity at the same point.
             validatedBps = confirmed;
             int step = Math.max(1, Math.min(config.stepBps, (int) (probeBps * config.stepFraction)));
-            probeBps = Math.min(maxBps, probeBps + step);
+            int ceiling = Math.min(maxBps, Math.max(ssthreshBps, probeBps));
+            probeBps = Math.min(ceiling, probeBps + step);
         } else {
-            // The pipe could not sustain the offer: the measured peak is the real capacity. Back off to it.
+            // The pipe could not sustain the offer: the measured peak is the real capacity. Remember the
+            // breaking offer as the new soft ceiling and back off to what the pipe actually delivered.
+            rememberCongestion(probeBps);
             validatedBps = confirmed;
             probeBps = Math.max(1, confirmed);
         }
@@ -158,6 +177,25 @@ public final class BitrateRampProbe {
         // so a stale high peak cannot mask a collapse that begins right after the boundary.
         windowPeakBps = 0;
         holdSinceMs = nowMs;
+    }
+
+    /**
+     * Record the offer that just congested the pipe; the fast ramp will not cross half of it again.
+     *
+     * <p>Only a break while genuinely stressing the pipe (offer above the survival floor) carries ceiling
+     * information. During the application-limited startup/idle phase GoogCC's estimate sits at the ~30 kbps
+     * WebRTC floor because static content produces few bits, so {@code raw < probe*severeBreakFactor} fires
+     * repeatedly at a tiny offer -- that is ALR noise, not congestion. Remembering it would crater ssthresh to
+     * the floor and permanently cap the probe below the tier-upgrade threshold (fps stuck at 10). Skip those:
+     * the probe cannot exceed the floor while ALR-pinned anyway, so real headroom is still discovered once
+     * motion drives the estimate up.
+     */
+    private void rememberCongestion(int brokeOfferBps) {
+        if (brokeOfferBps <= floorBps) {
+            return;
+        }
+        int halved = (int) (brokeOfferBps * config.ssthreshFactor);
+        ssthreshBps = Math.max(floorBps, Math.min(maxBps, halved));
     }
 
     /** Current offered encoder bitrate target; ramps up gradually, backs off to measured capacity on a break. */
@@ -175,7 +213,13 @@ public final class BitrateRampProbe {
         probeBps = Math.min(floorBps, maxBps);
         validatedBps = 0;
         windowPeakBps = 0;
+        ssthreshBps = maxBps; // A new peer/epoch gets a clean slow-start; congestion memory does not carry over.
         holdSinceMs = -1;
         lastMs = Long.MIN_VALUE;
+    }
+
+    /** Soft ceiling from congestion memory; the fast ramp holds here until a peer reset clears it. */
+    public int ssthreshBps() {
+        return ssthreshBps;
     }
 }

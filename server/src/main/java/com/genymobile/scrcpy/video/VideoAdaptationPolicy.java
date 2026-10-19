@@ -7,10 +7,10 @@ public final class VideoAdaptationPolicy {
         new BitrateLadder.Level(640, 15, 500000),
         new BitrateLadder.Level(854, 24, 800000),
         new BitrateLadder.Level(960, 30, 1200000),
+        new BitrateLadder.Level(1280, 30, 2500000),
         new BitrateLadder.Level(1280, 30, 3000000),
-        new BitrateLadder.Level(1280, 60, 3000000),
-        new BitrateLadder.Level(1600, 60, 4000000),
-        new BitrateLadder.Level(1920, 60, 6000000),
+        new BitrateLadder.Level(1600, 30, 4000000),
+        new BitrateLadder.Level(1920, 30, 4000000),
     };
     private final BitrateLadder ladder;
     private final BitrateRampProbe probe;
@@ -52,7 +52,8 @@ public final class VideoAdaptationPolicy {
     }
     /** Compact one-line view of the control loop for on-device diagnosis: raw GoogCC budget vs the ramp probe vs the applied tier. */
     public synchronized String diagnostics() {
-        return "raw=" + rawBps + " probe=" + probe.probeBps() + " validated=" + probe.validatedBps()
+        return "raw=" + rawBps + " probe=" + probe.probeBps() + " ssthresh=" + probe.ssthreshBps()
+                + " validated=" + probe.validatedBps()
                 + " tier=" + ladder.getCurrentLevelIndex() + "/" + ladder.current();
     }
     public synchronized void reset() {
