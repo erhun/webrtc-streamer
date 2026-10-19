@@ -132,8 +132,14 @@ void ScrcpyPassthroughEncoder::SetBitrateCallback(std::function<void(const webrt
 }
 
 int32_t ScrcpyPassthroughEncoder::InitEncode(const webrtc::VideoCodec* codec, const Settings& settings) {
-    webrtc::MutexLock lock(&mutex_);
-    received_positive_rate_ = false;
+    // Deliberately do NOT reset received_positive_rate_ here. WebRTC calls InitEncode again on every
+    // mid-stream reconfigure (a tier change alters the encoded resolution), and resetting the one-shot
+    // flag made the next positive SetRates fire key_frame_request_callback_ a second time -- on top of the
+    // IDR the Java MediaCodec reset already emits. Those two IDRs landed ~200ms apart (~500 kbit burst),
+    // shocking the pacer right after an upgrade and accelerating the post-upgrade estimate decline that
+    // drove the upgrade/downgrade oscillation. The startup-IDR guarantee is only needed once per encoder
+    // lifetime (cold start, when VideoStreamEncoder may still be paused and discard the first IDR); the
+    // construction-default false covers that, so mid-stream re-inits must leave the flag alone.
     return WEBRTC_VIDEO_CODEC_OK;
 }
 
