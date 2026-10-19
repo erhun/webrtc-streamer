@@ -1,6 +1,5 @@
 package com.genymobile.scrcpy.video;
 
-import com.genymobile.scrcpy.AndroidVersions;
 import com.genymobile.scrcpy.AsyncProcessor;
 import com.genymobile.scrcpy.Options;
 import com.genymobile.scrcpy.device.NativeEncoderBridge;
@@ -51,6 +50,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final boolean downsizeOnError;
     private final int minSizeAlignment;
     private final boolean ignoreVideoEncoderConstraints;
+    private final boolean adaptiveVideo;
 
     private boolean firstFrameSent;
     private int consecutiveErrors;
@@ -77,6 +77,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
 
     // Configured FPS changes rebuild the codec so its surface-input limit is updated.
     private float encoderFps;
+    private float adaptiveFps;
 
     private VideoConstraints videoConstraints;
 
@@ -85,17 +86,22 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         this.streamer = streamer;
         this.videoBitRate = options.getVideoBitRate();
         this.adaptation = new VideoAdaptationPolicy(videoBitRate);
+        this.adaptiveVideo = options.getVideoAdaptation();
         if (options.getSignalPort() > 0) {
             // Conservative bootstrap; the configured video bitrate becomes the explicit adaptive ceiling.
             this.videoBitRate = Math.min(videoBitRate, 500000);
-            this.adaptiveMaxSize = 640;
+            this.adaptiveMaxSize = adaptiveVideo ? 640 : 0;
         }
         this.maxSize = options.getMaxSize();
         this.requestedMaxFps = options.getMaxFps();
         this.encoderFps = requestedMaxFps;
-        if (options.getSignalPort() > 0) {
+        if (options.getSignalPort() > 0 && adaptiveVideo) {
             this.encoderFps = requestedMaxFps > 0 ? Math.min(requestedMaxFps, 15) : 15;
         }
+        if (options.getSignalPort() > 0 && !adaptiveVideo && encoderFps <= 0) {
+            this.encoderFps = 30;
+        }
+        this.adaptiveFps = encoderFps;
         this.codecOptions = options.getVideoCodecOptions();
         this.encoderName = options.getVideoEncoder();
         this.downsizeOnError = options.getDownsizeOnError();
@@ -153,6 +159,25 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                         + " maxSize=" + adaptiveMaxSize + " maxFps=" + encoderFps);
                 capture.prepare();
                 Size size = capture.getSize();
+                // Check the actual aligned dimensions. Keep the desired tier FPS separately so a device
+                // capped below 60 does not trigger another codec reset on every allocation callback.
+                encoderFps = adaptiveFps;
+                if (caps != null && encoderFps > 0 && caps.isSizeSupported(size.getWidth(), size.getHeight())) {
+                    try {
+                        float supportedFps = caps.getSupportedFrameRatesFor(size.getWidth(), size.getHeight()).getUpper().floatValue();
+                        if (supportedFps > 0 && encoderFps > supportedFps) {
+                            encoderFps = supportedFps;
+                            Ln.i("Encoder FPS capability: requested=" + adaptiveFps + " supported=" + supportedFps + " size=" + size);
+                        }
+                    } catch (IllegalArgumentException e) {
+                        // Some vendors report inconsistent size/rate ranges. Let configure/retry handle them.
+                        Ln.w("Cannot query encoder FPS capability for " + size + ": " + e.getMessage());
+                    }
+                }
+                videoConstraints = videoConstraints.withMaxFps(encoderFps > 0 ? encoderFps : 30);
+                if (!capture.applyNewVideoConstraints(videoConstraints)) {
+                    throw new IOException("Capture rejected encoder frame rate");
+                }
                 MediaFormat format = createFormat(codec.getMimeType(), videoBitRate, encoderFps, codecOptions);
                 if (!capture.controlsFrameRate() && !format.containsKey(KEY_MAX_FPS_TO_ENCODER)) {
                     // Direct capture: limit raw surface input, never discard encoded H.264 reference frames.
@@ -396,7 +421,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         // encoder on this device rejects it (ParamVideoIntraRefresh UnsupportedIndex 0x8000101a), so it
         // is a no-op there and the vendor cap below is the real lever. Keep it for encoders that do
         // honor it; a single IDR is still forced on join/resume/reset so a new viewer gets a clean picture.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             format.setInteger(MediaFormat.KEY_INTRA_REFRESH_PERIOD, Math.max(1, targetFps));
         }
 
@@ -405,7 +430,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         // rc-control struct with vbv_buffer_size=0, which fails CheckRateControlParamRange [10,100000] and
         // logs "ENCODE_GOP_PARAM_INDEX failed" every frame -- and the cap never shrank an IDR anyway
         // (480p IDRs stayed 11-29KB whether read as bits or bytes). Both levers are dead ends on this
-        // device, so neither is set; IDR bursts are handled by the ramp probe + WebRTC pacing instead.
+        // device, so neither is set; IDR requests are coalesced and WebRTC paces the resulting packets.
 
         // Requested bitrate mode; actual frame cadence is controlled before encoding.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -509,14 +534,13 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         boolean peerRefresh;
         boolean captureRefresh;
         BitrateLadder.Level level;
+        float tierFps;
         synchronized (feedbackLock) {
-            // Advance downgrade debounce with the cached allocation so congestion still resolves during SetRates
-            // gaps, but a cached tick is not a fresh observation and must never commit an upgrade (freshFeedback=false).
+            // Advance the bounded ramp and tier timers under the active SetRates grant, including callback gaps.
             boolean tierChanged = adaptation.tick(SystemClock.elapsedRealtime());
-            bps = pendingBitrate;
-            if (bps < 0 && tierChanged) {
-                bps = latestBudgetBps;
-            }
+            int currentBudget = adaptation.budget();
+            bps = pendingBitrate >= 0 || tierChanged || currentBudget != latestBudgetBps ? currentBudget : -1;
+            latestBudgetBps = currentBudget;
             pendingBitrate = -1;
             keyFrame = pendingKeyFrame;
             pendingKeyFrame = false;
@@ -525,6 +549,12 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             captureRefresh = pendingCaptureRefresh;
             pendingCaptureRefresh = false;
             level = adaptation.current();
+            tierFps = adaptation.frameRate(requestedMaxFps);
+            long nowMs = SystemClock.elapsedRealtime();
+            if ((bps >= 0 || tierChanged) && (lastAdaptLogMs == Long.MIN_VALUE || nowMs - lastAdaptLogMs >= 1000)) {
+                lastAdaptLogMs = nowMs;
+                Ln.i("Adapt tick: enabled=" + adaptiveVideo + " | " + adaptation.diagnostics());
+            }
         }
 
         if (peerRefresh) {
@@ -561,20 +591,15 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 keyFrame |= suspended;
                 suspended = false;
 
-                // The ramp probe owns the encoder target: bps is already min(probeBps, operator ceiling),
-                // so the encoder genuinely offers the ramped rate and stresses the pipe. Capping to the
-                // next tier's nominal rate decoupled probeBps from the actual offer, kept the link
-                // application-limited, and let GoogCC's phantom ALR budget validate a probe that was never
-                // sent — which drove the upgrade cascade. Resolution/fps remain guarded by BitrateLadder;
-                // RTP pacing stays in WebRTC.
+                // Media stays within the current allocation. WebRTC's feedback-driven transport probes
+                // discover headroom; codec output must not be used as an unpaced capacity probe.
                 int targetBitrate = Math.max(1, bps);
-                float nextFps = requestedMaxFps > 0
-                        ? Math.min(requestedMaxFps, level.getFps())
-                        : level.getFps();
-                int targetMaxSize = maxSize > 0 ? Math.min(maxSize, level.getMaxSize()) : level.getMaxSize();
+                float nextFps = adaptiveVideo ? tierFps : adaptiveFps;
+                int targetMaxSize = adaptiveVideo
+                        ? (maxSize > 0 ? Math.min(maxSize, level.getMaxSize()) : level.getMaxSize()) : adaptiveMaxSize;
 
                 // Surface-input FPS limits are codec configuration, not a supported setParameters hot update.
-                if (adaptiveMaxSize != targetMaxSize || Float.compare(encoderFps, nextFps) != 0) {
+                if (adaptiveMaxSize != targetMaxSize || Float.compare(adaptiveFps, nextFps) != 0) {
                     String reason = targetMaxSize > adaptiveMaxSize || nextFps > encoderFps ? "UPGRADE" : "DOWNGRADE";
                     int delta = Math.abs(targetMaxSize - adaptiveMaxSize);
                     Ln.i("Video tier changed: " + adaptiveMaxSize + " -> " + targetMaxSize
@@ -585,7 +610,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                             + ", fps=" + encoderFps + " -> " + nextFps
                             + ", triggering codec reset.");
                     adaptiveMaxSize = targetMaxSize;
-                    encoderFps = nextFps;
+                    adaptiveFps = nextFps;
                     videoBitRate = targetBitrate;
                     videoConstraints = videoConstraints.withMaxFps(nextFps);
                     needCodecReset = true;

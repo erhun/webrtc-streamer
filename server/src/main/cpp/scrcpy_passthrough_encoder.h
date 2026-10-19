@@ -13,6 +13,7 @@
 #include "rtc_base/synchronization/mutex.h"
 
 #include "media_clock.h"
+#include "encoded_frame_gate.h"
 #include <cstdint>
 #include <atomic>
 #include <functional>
@@ -23,7 +24,7 @@ namespace scrcpy {
 
 class EncodedVideoFrameBuffer : public webrtc::VideoFrameBuffer {
 public:
-    EncodedVideoFrameBuffer(std::vector<uint8_t> data, int width, int height, bool keyframe);
+    EncodedVideoFrameBuffer(std::vector<uint8_t> data, int width, int height, bool keyframe, uint64_t sequence);
 
     webrtc::VideoFrameBuffer::Type type() const override;
     int width() const override;
@@ -33,12 +34,14 @@ public:
     const uint8_t* data() const;
     size_t size() const;
     bool keyframe() const;
+    uint64_t sequence() const { return sequence_; }
 
 private:
     const std::vector<uint8_t> data_;
     const int width_;
     const int height_;
     const bool keyframe_;
+    const uint64_t sequence_;
 };
 
 // VideoBroadcaster's default RequestRefreshFrame is a no-op. Forward requests
@@ -68,7 +71,7 @@ private:
     uint64_t age_sum_us_ = 0;
     uint64_t age_count_ = 0;
     std::atomic<uint64_t> encoded_bytes_{0};
-    int source_frame_count_ = 0;
+    uint64_t source_frame_count_ = 0;
     MediaClock clock_;
     RefreshVideoBroadcaster broadcaster_;
     std::vector<uint8_t> sps_pps_;
@@ -93,6 +96,7 @@ public:
 
 private:
     webrtc::Mutex mutex_;
+    EncodedFrameGate frame_gate_;
     bool received_positive_rate_ = false;
     int encode_count_ = 0;
     int debug_count_ = 0;

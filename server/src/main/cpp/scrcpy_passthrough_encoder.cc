@@ -13,8 +13,8 @@
 
 namespace scrcpy {
 
-EncodedVideoFrameBuffer::EncodedVideoFrameBuffer(std::vector<uint8_t> data, int width, int height, bool keyframe)
-        : data_(std::move(data)), width_(width), height_(height), keyframe_(keyframe) {
+EncodedVideoFrameBuffer::EncodedVideoFrameBuffer(std::vector<uint8_t> data, int width, int height, bool keyframe, uint64_t sequence)
+        : data_(std::move(data)), width_(width), height_(height), keyframe_(keyframe), sequence_(sequence) {
 }
 
 webrtc::VideoFrameBuffer::Type EncodedVideoFrameBuffer::type() const {
@@ -62,7 +62,8 @@ void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, 
         return;
     }
     if (++source_frame_count_ % 60 == 1) {
-        SCP_LOGE("OnEncodedFrame: frame#%d key=%d len=%zu %dx%d", source_frame_count_, keyframe, len, width, height);
+        SCP_LOGE("OnEncodedFrame: frame#%llu key=%d len=%zu %dx%d",
+                static_cast<unsigned long long>(source_frame_count_), keyframe, len, width, height);
     }
 
     // Android screen PTS and CLOCK_MONOTONIC share the monotonic time base.
@@ -90,7 +91,7 @@ void EncodedVideoTrackSource::OnEncodedFrame(const uint8_t* annexb, size_t len, 
     }
 
     webrtc::scoped_refptr<EncodedVideoFrameBuffer> buffer =
-            webrtc::make_ref_counted<EncodedVideoFrameBuffer>(std::move(data), width, height, keyframe);
+            webrtc::make_ref_counted<EncodedVideoFrameBuffer>(std::move(data), width, height, keyframe, source_frame_count_);
 
     const int64_t capture_us = clock_.Normalize(pts_us);
     webrtc::VideoFrame frame = webrtc::VideoFrame::Builder()
@@ -157,21 +158,14 @@ int32_t ScrcpyPassthroughEncoder::Release() {
 
 int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
         const std::vector<webrtc::VideoFrameType>* frame_types) {
-    if (++encode_count_ <= 5 || encode_count_ % 10 == 0) {
+    if (++encode_count_ <= 5) {
         SCP_LOGE("Encode: #%d", encode_count_);
     }
+    bool refresh_requested = false;
     if (frame_types != nullptr) {
         for (webrtc::VideoFrameType type : *frame_types) {
             if (type == webrtc::VideoFrameType::kVideoFrameKey) {
-                std::function<void()> callback;
-                {
-                    webrtc::MutexLock lock(&mutex_);
-                    callback = key_frame_request_callback_;
-                }
-                if (callback) {
-                    callback();
-
-                }
+                refresh_requested = true;
                 break;
             }
         }
@@ -186,6 +180,23 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
     if (encoded == nullptr) {
         return WEBRTC_VIDEO_CODEC_ERROR;
     }
+
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    const int64_t now_ms = now.tv_sec * 1000LL + now.tv_nsec / 1000000;
+    EncodedFrameGate::Decision decision;
+    std::function<void()> refresh;
+    {
+        webrtc::MutexLock lock(&mutex_);
+        decision = frame_gate_.Inspect(encoded->sequence(), encoded->keyframe(), refresh_requested, now_ms);
+        if (decision.request_keyframe) { refresh = key_frame_request_callback_; }
+    }
+    if (refresh) {
+        SCP_LOGE("Encoded reference recovery: sequence=%llu; requesting IDR",
+                static_cast<unsigned long long>(encoded->sequence()));
+        refresh();
+    }
+    if (!decision.send) { return WEBRTC_VIDEO_CODEC_NO_OUTPUT; }
 
     if (encoded->keyframe()) {
         SCP_LOGE("Encode keyframe: pts_us=%lld rtp=%u bytes=%zu",
@@ -219,6 +230,11 @@ int32_t ScrcpyPassthroughEncoder::Encode(const webrtc::VideoFrame& frame,
     }
 
     webrtc::EncodedImageCallback::Result result = callback->OnEncodedImage(image, &codec_specific);
+    {
+        webrtc::MutexLock lock(&mutex_);
+        frame_gate_.OnDelivery(encoded->keyframe(), result.error == webrtc::EncodedImageCallback::Result::OK,
+                result.drop_next_frame);
+    }
     if (++callback_count_ % 30 == 1) {
         SCP_LOGE("Encode: OnEncodedImage result=%d cb#%d", (int) result.error, callback_count_);
     }
@@ -235,7 +251,11 @@ void ScrcpyPassthroughEncoder::SetRates(const RateControlParameters& parameters)
         callback = bitrate_callback_;
         if (target_bps > 0 && !received_positive_rate_) {
             received_positive_rate_ = true;
-            refresh = key_frame_request_callback_;
+            timespec now{};
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (frame_gate_.RequestRefresh(now.tv_sec * 1000LL + now.tv_nsec / 1000000)) {
+                refresh = key_frame_request_callback_;
+            }
         }
     }
     // Deliver the budget first, then request a freshly encoded IDR. Transport
@@ -264,8 +284,10 @@ ScrcpyPassthroughEncoder::EncoderInfo ScrcpyPassthroughEncoder::GetEncoderInfo()
     // bucket keyed on encoded size vs target; if it drops one of these pre-encoded frames it silently
     // breaks the H.264 reference chain (delta frames depend on it), corrupting the decode and triggering
     // a PLI storm. Declaring a trusted rate controller disables that dropper so WebRTC never discards a
-    // reference frame it does not understand. Overshoot is bounded at the source instead: CBR + the
-    // ~1s intra-refresh (no large IDR bursts) keep MediaCodec's output close to target.
+    // reference frame it does not understand. Java now bounds the configured target by SetRates; CBR
+    // still needs device validation (intra-refresh is optional and not supported by every vendor).
+    // This flag does NOT disable queue/cwnd/paused-frame drops. frame_gate_ detects source sequence gaps
+    // at Encode and waits for a successful IDR instead of forwarding a broken reference chain.
     info.has_trusted_rate_controller = true;
     // This is a capability ceiling, NOT a requested or minimum sending rate.
     // The Java ladder owns resolution adaptation and still clamps MediaCodec

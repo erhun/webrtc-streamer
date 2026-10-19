@@ -8,6 +8,7 @@
 #include "api/field_trials.h"
 #include "api/units/time_delta.h"
 #include "api/jsep.h"
+#include "api/rtp_sender_interface.h"
 #include "api/set_local_description_observer_interface.h"
 #include "api/set_remote_description_observer_interface.h"
 #include "api/video_codecs/builtin_video_decoder_factory.h"
@@ -29,6 +30,25 @@
 namespace scrcpy {
 
 namespace {
+void ConfigureVideoSender(webrtc::RtpSenderInterface& sender) {
+    auto parameters = sender.GetParameters();
+    if (parameters.encodings.empty()) {
+        SCP_LOGE("Video sender: waiting for negotiated encodings before setting max_framerate");
+        return;
+    }
+    for (auto& encoding : parameters.encodings) { encoding.max_framerate = 60.0; }
+    auto configured = sender.SetParameters(parameters);
+    if (!configured.ok()) {
+        SCP_LOGE("Video sender rejected max_framerate=60: %s", configured.message());
+        return; // Preserve media on implementations that reject this optional ceiling update.
+    }
+    bool twcc = false;
+    for (const auto& extension : parameters.header_extensions) {
+        twcc |= extension.uri == webrtc::RtpExtension::kTransportSequenceNumberUri;
+    }
+    SCP_LOGE("Video sender configured: max_framerate=60 twcc_extension=%d", twcc);
+}
+
 class LatencyStatsCallback : public webrtc::RTCStatsCollectorCallback {
 public:
     explicit LatencyStatsCallback(std::function<void(const webrtc::RTCStatsReport&)> callback)
@@ -204,9 +224,9 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         // FastRetransmissions lets RTX packets jump the pacer queue so NACK recovery
         // completes in ~1 RTT instead of waiting behind queued media; this lowers the
         // residual loss the decoder sees and cuts PLI re-requests on a lossy path.
-        // (WebRTC-Pacer-KeyframeFlushing is not parsed by this libwebrtc revision, so
-        // it is intentionally omitted; large-IDR bursts are removed at the source via
-        // MediaCodec intra-refresh instead.)
+        // Probes/padding are paced by WebRTC and evaluated from transport feedback.
+        // Java does not manufacture load by exceeding SetRates. Intra-refresh is optional;
+        // join/recovery still produce IDRs, whose requests must be coalesced at the source.
         static webrtc::FieldTrials field_trials(
                 "WebRTC-VideoRateControl/alr_probing:true/"
                 "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/"
@@ -283,7 +303,13 @@ bool ScrcpyPeerConnection::CreatePeerConnection() {
     if (!result.ok()) { return false; }
     peer_connection_ = result.MoveValue();
     auto video_track = factory_->CreateVideoTrack(video_source_, "video");
-    if (!video_track || !peer_connection_->AddTrack(video_track, {"scrcpy"}).ok()) { return false; }
+    if (!video_track) { return false; }
+    auto video_result = peer_connection_->AddTrack(video_track, {"scrcpy"});
+    if (!video_result.ok()) { return false; }
+    auto sender = video_result.MoveValue();
+    // Lift the media-engine default 30fps ceiling. Java/capture still enforce each tier,
+    // the user's max_fps, and the actual MediaCodec capabilities. Do not force a minimum rate.
+    ConfigureVideoSender(*sender);
     if (audio_source_) {
         auto audio_track = factory_->CreateAudioTrack("audio", audio_source_.get());
         if (!audio_track || !peer_connection_->AddTrack(audio_track, {"scrcpy"}).ok()) { return false; }
@@ -502,6 +528,13 @@ void ScrcpyPeerConnection::OnAnswerCreated(std::unique_ptr<webrtc::SessionDescri
 }
 
 void ScrcpyPeerConnection::OnLocalDescriptionSet() {
+    // Reapply after negotiation and report the negotiated transport-feedback extension.
+    for (const auto& sender : peer_connection_->GetSenders()) {
+        auto track = sender->track();
+        if (track && track->kind() == webrtc::MediaStreamTrackInterface::kVideoKind) {
+            ConfigureVideoSender(*sender);
+        }
+    }
     if (answer_callback_) {
         std::string sdp;
         if (peer_connection_->local_description() != nullptr) {

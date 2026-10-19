@@ -107,8 +107,15 @@ H5 使用 tab 级 `sessionStorage` 保存有 45 秒滚动期限的恢复秘密�
 编码策略提供最大边长 480/640 的 10/15fps 弱网档位，后接常规档位。WebRTC 启动使用最多
 500kbps、640 最大边长、15fps，仍遵守用户尺寸/帧率上限；`video_bit_rate` 是自适应编码目标的上限。
 升档采用基于时间的平滑与逐级稳定窗口，下降应用原始预算；SetRates 静默不是心跳超时。
-缓存 tick 允许完成降档防抖，但不能单凭旧预算升档。关键帧请求跨轮询至少相隔 300ms。
+编码目标不超过当前分配和运营上限；只平滑增加，降低预算立即生效。有效分配在零预算或 peer reset 前持续有效，
+编码线程 tick 推进升速及档位防抖，不依赖 SetRates 心跳。held 是已保持的配置预算，不是实测/ACK 吞吐。
+网络探测由 WebRTC ALR probing、pacer 和 transport feedback 完成，Java 不再通过 H.264 超发探测。
+档位为 480/10、640/15、854/24、960/30、1280/30、1280/60、1600/60、1920/60；
+最高档标称 6Mbps，配置尺寸/帧率及实际 MediaCodec 能力仍是上限。
+Java 关键帧请求跨轮询至少相隔 300ms；native 合并未完成请求、成功提交当前 IDR 后满足请求，
+检测到透传帧序号缺口/提交失败时停止转发依赖帧并请求 IDR，未完成恢复时最多每秒重试。
 档位、平滑与关键帧间隔是初始策略参数，仍需目标 SoC、内容和网络标定。
+隔离验证与构建边界见 [frame-rate-validation.md](frame-rate-validation.md)。
 
 音频统一 PCM -> 10ms 分帧 -> libwebrtc 内置 Opus。删除外部 Opus 队列、伪 PCM 驱动和其自定义编码工厂。
 WebRTC 模式拒绝 `audio_scheme=opus`；原 TCP 音频编码选项不变。
@@ -127,6 +134,7 @@ WebRTC 模式拒绝 `audio_scheme=opus`；原 TCP 音频编码选项不变。
 | `public_ip/external_min_port/external_max_port` | 使用静态端口映射时配置；只改写 candidate 地址和端口字段 |
 | `audio_scheme` | WebRTC 只支持 pcm |
 | `video_bit_rate` | WebRTC 自适应目标上限，默认 8Mbps；不等于实际输出或总线路速率 |
+| `video_adaptation` | 默认 true；false 固定用户尺寸/帧率用于诊断，仍遵守 WebRTC 码率预算和硬件能力；未指定帧率时用 30fps |
 
 H5 只接受 WSS 或 localhost WS。删除固定公网调试地址；页面默认使用当前站点的 `/signal`。
 使用静态 NAT 映射必须保证实际路由/防火墙与本地端口范围一致，改写 candidate 不会创建 NAT 映射。

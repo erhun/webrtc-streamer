@@ -30,6 +30,7 @@ public final class FramePipelineTest {
     private static void testRawFrameCadence() {
         check(sample(24, 30, 10) == 240, "30 Hz source must produce 24, not 15, sampled frames per second");
         check(sample(30, 60, 10) == 300, "60 -> 30 cadence");
+        check(sample(60, 60, 10) == 600, "A 60 Hz source must retain all frames at the restored 60fps tier");
         check(sample(60, 30, 10) == 300, "Never invent new source frames");
         check(sample(0, 60, 10) == 600, "Unrestricted raw input");
         FrameRateLimiter limiter = new FrameRateLimiter();

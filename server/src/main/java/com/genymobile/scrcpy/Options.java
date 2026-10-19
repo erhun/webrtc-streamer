@@ -93,6 +93,7 @@ public class Options {
     private boolean powerOffScreenOnClose;
     private boolean clipboardAutosync = true;
     private boolean downsizeOnError = true;
+    private boolean videoAdaptation = true;
     private boolean cleanup = true;
     private boolean powerOn = true;
 
@@ -277,6 +278,10 @@ public class Options {
 
     public boolean getDownsizeOnError() {
         return downsizeOnError;
+    }
+
+    public boolean getVideoAdaptation() {
+        return videoAdaptation;
     }
 
     public boolean getCleanup() {
@@ -471,6 +476,9 @@ public class Options {
                     break;
                 case "max_fps":
                     options.maxFps = parseFloat("max_fps", value);
+                    break;
+                case "video_adaptation":
+                    options.videoAdaptation = Boolean.parseBoolean(value);
                     break;
                 case "angle":
                     options.angle = parseFloat("angle", value);

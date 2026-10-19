@@ -8,9 +8,9 @@ public final class VideoAdaptationPolicy {
         new BitrateLadder.Level(854, 24, 800000),
         new BitrateLadder.Level(960, 30, 1200000),
         new BitrateLadder.Level(1280, 30, 2500000),
-        new BitrateLadder.Level(1280, 30, 3000000),
-        new BitrateLadder.Level(1600, 30, 4000000),
-        new BitrateLadder.Level(1920, 30, 4000000),
+        new BitrateLadder.Level(1280, 60, 3000000),
+        new BitrateLadder.Level(1600, 60, 4000000),
+        new BitrateLadder.Level(1920, 60, 6000000),
     };
     private final BitrateLadder ladder;
     private final BitrateRampProbe probe;
@@ -27,33 +27,36 @@ public final class VideoAdaptationPolicy {
         BitrateLadder.Level[] allowed = new BitrateLadder.Level[count];
         System.arraycopy(CLOUD_PHONE_LEVELS, 0, allowed, 0, count);
         int initialLevel = Math.min(1, count - 1);
-        ladder = new BitrateLadder(allowed, initialLevel);
-        // Ramp the encoder offer up from the initial tier's nominal rate, never past the operator ceiling.
-        // Upgrades read the probe's validated capacity, not GoogCC's application-limited budget, so a
-        // stably inflated estimate can no longer promote tiers the pipe cannot actually sustain.
+        BitrateLadder.Config config = new BitrateLadder.Config();
+        config.maximumBps = maximumBps;
+        ladder = new BitrateLadder(allowed, initialLevel, config);
+        // Smooth media increases within the allocation. Transport probing belongs to WebRTC.
         probe = new BitrateRampProbe(allowed[initialLevel].getBitRate(), maximumBps, new BitrateRampProbe.Config());
     }
 
     public synchronized void observe(int bps, long nowMs) {
         rawBps = Math.max(0, bps);
         probe.onBudget(rawBps, nowMs);
-        // rawBps drives downgrades (congestion answered immediately); validatedBps gates upgrades.
-        ladder.update(rawBps, probe.validatedBps(), nowMs, true);
+        ladder.update(rawBps, probe.heldBps(), nowMs, true);
     }
 
     public synchronized boolean tick(long nowMs) {
-        return rawBps > 0 && ladder.update(rawBps, probe.validatedBps(), nowMs, false);
+        probe.tick(nowMs);
+        // SetRates grants persist until superseded, paused or reset; they are not heartbeat samples.
+        return rawBps > 0 && ladder.update(rawBps, probe.heldBps(), nowMs, true);
     }
 
     public synchronized BitrateLadder.Level current() { return ladder.current(); }
-    /** Ramped encoder target: follows the probe's validated offer, bounded by the operator ceiling. -1 before any observation. */
-    public synchronized int budget() {
-        return rawBps < 0 ? -1 : Math.min(probe.probeBps(), maximumBps);
+    public synchronized float frameRate(float requestedMaxFps) {
+        return requestedMaxFps > 0 ? Math.min(requestedMaxFps, ladder.current().getFps()) : ladder.current().getFps();
     }
-    /** Compact one-line view of the control loop for on-device diagnosis: raw GoogCC budget vs the ramp probe vs the applied tier. */
+    /** Encoder target bounded by both the current allocation and operator ceiling. -1 before feedback. */
+    public synchronized int budget() {
+        return rawBps < 0 ? -1 : Math.min(rawBps, Math.min(probe.targetBps(), maximumBps));
+    }
+    /** Held allocation is debounce state, not measured network capacity. */
     public synchronized String diagnostics() {
-        return "raw=" + rawBps + " probe=" + probe.probeBps() + " ssthresh=" + probe.ssthreshBps()
-                + " validated=" + probe.validatedBps()
+        return "raw=" + rawBps + " target=" + probe.targetBps() + " held=" + probe.heldBps()
                 + " tier=" + ladder.getCurrentLevelIndex() + "/" + ladder.current();
     }
     public synchronized void reset() {

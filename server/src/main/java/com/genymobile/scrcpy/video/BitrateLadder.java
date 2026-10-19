@@ -47,6 +47,8 @@ public final class BitrateLadder {
         public double downscaleFactor = 0.78;
         /** 带宽高于下一档码率 * upscaleFactor 时触发升档 */
         public double upscaleFactor = 1.12;
+        /** Operator ceiling; upgrade headroom must remain reachable at this allocation. */
+        public int maximumBps = Integer.MAX_VALUE;
         /** 升档防抖：需稳定维持的毫秒数 */
         public long upgradeStableMs = 6000L;
         /**
@@ -69,6 +71,7 @@ public final class BitrateLadder {
             Config c = new Config();
             c.downscaleFactor = downscaleFactor;
             c.upscaleFactor = upscaleFactor;
+            c.maximumBps = maximumBps;
             c.upgradeStableMs = upgradeStableMs;
             c.downgradeStableMs = downgradeStableMs;
             c.severeDowngradeStableMs = severeDowngradeStableMs;
@@ -159,12 +162,11 @@ public final class BitrateLadder {
 
     /**
      * @param rawBps        latest allocation; drives downgrades so congestion is answered immediately.
-     * @param smoothedBps   EMA-damped allocation; drives upgrades so a single probe spike cannot promote a tier.
-     * @param freshFeedback true only for a new SetRates event. Cached encoder-thread ticks (false) keep a
-     *                      downgrade responsive but never advance or commit an upgrade window, so silence
-     *                      cannot promote a stale budget.
+     * @param smoothedBps held/smoothed allocation used to debounce upgrades; not measured throughput.
+     * @param allowUpgrade whether the caller has an active allocation grant authorizing upgrades. False
+     *                     still allows downgrade timers. VideoAdaptationPolicy revokes the grant on zero/reset.
      */
-    public synchronized boolean update(int rawBps, int smoothedBps, long nowMs, boolean freshFeedback) {
+    public synchronized boolean update(int rawBps, int smoothedBps, long nowMs, boolean allowUpgrade) {
         if (rawBps <= 0) {
             resetFeedback();
             return false;
@@ -191,8 +193,7 @@ public final class BitrateLadder {
             downgradeSinceMs = -1;
             targetDowngradeLevel = -1;
 
-            // A cached tick re-feeds a stale budget; it must never accumulate stability or commit an upgrade.
-            if (!freshFeedback) {
+            if (!allowUpgrade) {
                 return false;
             }
             if (upgradeSinceMs < 0) {
@@ -286,7 +287,8 @@ public final class BitrateLadder {
      */
     private int computeUpgradeLevel(int smoothedBps) {
         if (level < levels.length - 1
-                && smoothedBps > levels[level + 1].bitRate * config.upscaleFactor) {
+                && levels[level + 1].bitRate <= config.maximumBps
+                && smoothedBps >= Math.min(config.maximumBps, levels[level + 1].bitRate * config.upscaleFactor)) {
             return level + 1;
         }
         return level;

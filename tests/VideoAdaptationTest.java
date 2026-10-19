@@ -15,8 +15,8 @@ public final class VideoAdaptationTest {
     private static BitrateLadder ladder(int initialLevel) {
         // Exercise the production tier table (single source of truth) with test-owned debounce timing,
         // so the algorithm is validated against the real ladder independently of production tuning.
-        // CLOUD_PHONE_LEVELS bitrates: [250k,500k,800k,1.2M,3M,3M,4M,6M]; upgrade to L+1 needs
-        // smoothed > levels[L+1]*1.12, downgrade while raw < levels[L]*0.78.
+        // Upgrade to L+1 needs held >= min(levels[L+1]*1.12, operator ceiling);
+        // downgrade while raw < levels[L]*0.78.
         BitrateLadder.Config config = new BitrateLadder.Config();
         config.upgradeStableMs = 5000;
         config.downgradeStableMs = 3000;
