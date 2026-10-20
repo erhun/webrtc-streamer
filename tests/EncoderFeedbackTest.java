@@ -70,12 +70,12 @@ public final class EncoderFeedbackTest {
         apply(fixedEncoder, codec, 0);
         check(sink.bitrate == 200_000, "Low allocation must reach MediaCodec immediately");
         fixedEncoder.onBitrate(2_000_000, 30);
-        apply(fixedEncoder, codec, 1500);
-        check(sink.bitrate > 200_000 && sink.bitrate <= 2_000_000, "Timer ramp reaches codec without more feedback");
+        apply(fixedEncoder, codec, 1);
+        check(sink.bitrate == 2_000_000, "Recovered grant reaches the codec on its next poll, not after a second slow-start");
         for (long t = 3000; t <= 90_000; t += 1500) {
             apply(fixedEncoder, codec, t);
         }
-        check(sink.bitrate == 2_000_000, "Ramp eventually uses the granted allocation");
+        check(sink.bitrate == 2_000_000, "Stable allocation stays applied without further SetRates events");
         check(!fixedControl.isResetRequested(), "Fixed size/FPS mode never resets for adaptive tiers");
         check(field("adaptiveFps").getFloat(fixedEncoder) == 30, "Fixed 30fps remains fixed");
         fixedEncoder.onBitrate(0, 30);
@@ -83,7 +83,7 @@ public final class EncoderFeedbackTest {
         check(field("suspended").getBoolean(fixedEncoder), "Zero pauses forwarding");
         fixedEncoder.onBitrate(1_000_000, 30);
         apply(fixedEncoder, codec, 92_000);
-        check(!field("suspended").getBoolean(fixedEncoder) && sink.bitrate == 500_000, "Resume has a useful bounded target");
+        check(!field("suspended").getBoolean(fixedEncoder) && sink.bitrate == 1_000_000, "Resume follows the current allocation");
 
         Options adaptive = new Options();
         PacketSink adaptiveSink = new PacketSink();
@@ -104,6 +104,6 @@ public final class EncoderFeedbackTest {
         adaptiveEncoder.onBitrate(8_000_000, 30);
         apply(adaptiveEncoder, codec, 241_000);
         check(!control.isResetRequested(), "A device limited to 30fps must not enter a 60fps reset loop");
-        System.out.println("Encoder feedback passed (timer application, fixed-mode isolation, zero/resume, 60fps, device cap/reset loop)");
+        System.out.println("Encoder feedback passed (immediate grant application, fixed-mode isolation, zero/resume, 60fps, device cap/reset loop)");
     }
 }

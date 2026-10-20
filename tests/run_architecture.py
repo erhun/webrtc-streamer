@@ -119,7 +119,7 @@ real = ['stream/PeerKey.java', 'stream/StreamingConfig.java', 'stream/StreamingS
         'signal/PeerLease.java', 'signal/SignalServer.java', 'signal/PortMapConfig.java', 'signal/SdpRewriter.java',
         'control/ControlManager.java', 'device/DataChannelInputStream.java', 'device/PacketSink.java',
         'device/BroadcastVideoSink.java', 'device/BroadcastAudioSink.java', 'audio/AudioScheme.java',
-        'video/BitrateAggregator.java', 'video/BitrateLadder.java', 'video/BitrateRampProbe.java',
+        'video/BitrateAggregator.java', 'video/BitrateLadder.java',
         'video/VideoAdaptationPolicy.java', 'video/KeyFrameRequestGate.java']
 with tempfile.TemporaryDirectory(prefix='architecture-', dir=root / 'tests') as directory:
     temp = Path(directory)

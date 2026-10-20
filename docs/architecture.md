@@ -35,7 +35,7 @@ flowchart TD
 | `PeerLease` | 独立恢复秘密、socket owner、恢复期限、页面身份 | 管理 Android 或 libwebrtc |
 | `ControlManager` | 控制权排队、交接时释放旧输入、过滤非控制者 | 持有媒体 peer 的生命周期 |
 | `BitrateAggregator` | 明确选择共享编码器预算的业务策略 | 再实现一个 GCC |
-| `VideoAdaptationPolicy` | 纯 Java 的预算平滑、档位和配置上限 | 调用 MediaCodec/JNI |
+| `VideoAdaptationPolicy` | 纯 Java 的预算约束、档位和配置上限 | 调用 MediaCodec/JNI |
 | `SurfaceEncoder` | 在编码线程应用预算、重配、请求 IDR | 鉴权、房间和用户管理 |
 | `BroadcastVideoSink` | 一个不可变 payload 扇出，新/重置 peer 等待参数集和 IDR | 随意丢弃已经编码的参考帧 |
 | `NativeEncoderBridge` | JNI 边界和 native handle；同步调用期间明确 payload 所有权 | 控制业务会话生命周期 |
@@ -106,15 +106,16 @@ H5 使用 tab 级 `sessionStorage` 保存有 45 秒滚动期限的恢复秘密�
 
 编码策略提供最大边长 480/640 的 10/15fps 弱网档位，后接常规档位。WebRTC 启动使用最多
 500kbps、640 最大边长、15fps，仍遵守用户尺寸/帧率上限；`video_bit_rate` 是自适应编码目标的上限。
-升档采用基于时间的平滑与逐级稳定窗口，下降应用原始预算；SetRates 静默不是心跳超时。
-编码目标不超过当前分配和运营上限；只平滑增加，降低预算立即生效。有效分配在零预算或 peer reset 前持续有效，
-编码线程 tick 推进升速及档位防抖，不依赖 SetRates 心跳。held 是已保持的配置预算，不是实测/ACK 吞吐。
+升档采用逐级稳定窗口，下降采用独立防抖；SetRates 静默不是心跳超时。
+编码目标及时跟随 min(当前 WebRTC 分配, 运营上限)，增加/降低都在下一轮编码线程轮询应用，不再叠加 Java 慢启动。
+有效分配在零预算或 peer reset 前持续有效；编码线程 tick 只推进档位防抖，不依赖 SetRates 心跳。
+升档使用有界分配值，保留 6 秒稳定窗口和逐级提升；分配值不是实测/ACK 吞吐。
 网络探测由 WebRTC ALR probing、pacer 和 transport feedback 完成，Java 不再通过 H.264 超发探测。
 档位为 480/10、640/15、854/24、960/30、1280/30、1280/60、1600/60、1920/60；
 最高档标称 6Mbps，配置尺寸/帧率及实际 MediaCodec 能力仍是上限。
 Java 关键帧请求跨轮询至少相隔 300ms；native 合并未完成请求、成功提交当前 IDR 后满足请求，
 检测到透传帧序号缺口/提交失败时停止转发依赖帧并请求 IDR，未完成恢复时最多每秒重试。
-档位、平滑与关键帧间隔是初始策略参数，仍需目标 SoC、内容和网络标定。
+档位防抖与关键帧间隔是初始策略参数，仍需目标 SoC、内容和网络标定。
 隔离验证与构建边界见 [frame-rate-validation.md](frame-rate-validation.md)。
 
 音频统一 PCM -> 10ms 分帧 -> libwebrtc 内置 Opus。删除外部 Opus 队列、伪 PCM 驱动和其自定义编码工厂。

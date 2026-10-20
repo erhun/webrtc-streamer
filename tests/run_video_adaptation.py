@@ -17,17 +17,17 @@ def main():
         subprocess.run([
             java, "-m", "jdk.compiler/com.sun.tools.javac.Main", "-Xlint:all", "-Werror", "-d", temp,
             str(source / "BitrateLadder.java"),
-            str(source / "BitrateRampProbe.java"),
             str(source / "VideoAdaptationPolicy.java"),
             str(source / "FrameRateLimiter.java"), str(source / "BitrateAggregator.java"),
             str(root / "server/src/main/java/com/genymobile/scrcpy/audio/ShellAudioWorkaround.java"), str(stub),
             str(root / "tests/FramePipelineTest.java"),
-            str(root / "tests/VideoAdaptationTest.java"), str(root / "tests/RampProbeTest.java"),
+            str(root / "tests/VideoAdaptationTest.java"), str(root / "tests/BudgetRecoveryTest.java"),
             str(root / "tests/ParseJava.java"),
         ], check=True, cwd=root)
         subprocess.run([java, "-cp", temp, "VideoAdaptationTest"], check=True, cwd=root)
         subprocess.run([java, "-cp", temp, "FramePipelineTest"], check=True, cwd=root)
-        subprocess.run([java, "-cp", temp, "RampProbeTest"], check=True, cwd=root)
+        subprocess.run([java, "-cp", temp, "BudgetRecoveryTest",
+                        "tests/fixtures/resolution-budget-window.txt"], check=True, cwd=root)
         subprocess.run([java, "-cp", temp, "ParseJava", "server/src/main/java"], check=True, cwd=root)
 
 

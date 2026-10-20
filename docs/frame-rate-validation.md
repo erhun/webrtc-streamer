@@ -1,17 +1,17 @@
 # 帧率恢复与全链路隔离验证
 
-此版本修改 Java 与 C++，必须部署匹配的 JNI 制品和 APK。仓库已有 `.so` 不包含本次修改。
+此前的 native 参考链/60fps 修改需要匹配的 JNI 制品。本次预算恢复修正只改 Java，使用与当前 C++ 源码匹配的 JNI 制品重新打包 APK。
 本文的主机回归不代表 SoC、MediaCodec、真实 libwebrtc 或网络已验收。
 
 ## 控制行为
 
-- Java 编码配置始终不超过当前 SetRates 分配及 `video_bit_rate`，降预算立即收敛，增加每 1.5 秒最多
-  15%/250kbps（取较小值）。不保留 Java ssthresh，不通过超发 H.264 验证链路容量。
+- Java 编码配置跟随 min(当前 SetRates 分配, `video_bit_rate`)，增加/降低均在下一轮编码轮询应用。
+  移除 15%/1.5 秒的二次慢启动和 held 升档门槛；不通过超发 H.264 验证链路容量。
 - WebRTC 保留 ALR probing，负责基于传输反馈的探测和 pacing。协商后的 native 日志显示
   `Video sender configured: max_framerate=60 twcc_extension=...`。扩展存在不等于探测已经成功，
   还须从匹配版本的 WebRTC 日志/事件日志核对 probe cluster 与反馈结果；缺少反馈时不能宣称容量验证成功。
-- 稳定分配在零预算/peer reset 前仍有效，编码线程 tick 可推进 ramp 和档位防抖。
-  `Adapt`/`Adapt tick` 的 `held` 是配置保持状态，不是 ACK 吞吐。
+- 稳定分配在零预算/peer reset 前仍有效，编码线程 tick 仅推进档位防抖。
+  升档按 `upgradeBudget` 持续满足门槛 6 秒逐级提升；它是有界分配值，不是 ACK 吞吐。
 - native 对源帧编号；在 Encode 前丢帧造成序号缺口时等待 IDR，不继续发送断裂参考链。
   当前 IDR 成功提交到 WebRTC 后可满足请求，不额外请求第二个 IDR；此处成功不代表接收端已确认解码。
   IDR 提交失败不解除等待，重试间隔至少 1 秒。RTP 层丢包仍依赖 NACK/PLI 恢复。
@@ -73,7 +73,22 @@ PLI/NACK/keyFrames、浏览器解码/呈现/freeze。设备厂商日志与 probe
 
 ## 本次执行边界
 
-预算/档位回归、真实 SurfaceEncoder 接线回归、主机 native 门控 UBSan、架构、JNI 声明及
-制品交付模拟检查通过。完整回归在已有的 `tests/client_test.cjs:167` 远程 WS 断言处失败，
-本次没有修改该前端行为。Gradle wrapper 9.3.1 下载遇到网络不可达，test/checkstyle/lint 未执行。
+本轮预算/档位与日志回放、真实 SurfaceEncoder 接线、架构回归通过。
+上轮已完成主机 native 门控 UBSan、JNI 声明及制品交付模拟检查；本轮未改 native 源码。
+上轮完整回归在已有的 `tests/client_test.cjs:167` 远程 WS 断言处失败，本轮未改该前端行为。
+本轮再次尝试 Gradle wrapper 9.3.1 下载遇到网络不可达，test/checkstyle/lint 未执行。
 当前环境缺少 Android SDK、匹配 native 工具链及 ADB，未生成新 `.so`/APK、未执行上表设备测试。
+
+## 设备预算轨迹回归
+
+`capacity_capture2.log` 的 15:18:37.590—15:21:30.590 共 174 个 pipeline 样本均为 codec/handoff 10fps；
+handoff 最慢 0.153ms，没有切档或 codec 重建记录。144 条预算日志的 raw 最高 5,342,000bps，
+而 target 最高 374,713bps、held 最高 325,838bps；held 从未达到离开最低档所需的 560,000bps。
+日志中的 `Encoded reference recovery` 确认设备已运行新版 native；不能再归因于未部署 native 更新。
+
+`tests/fixtures/resolution-budget-window.txt` 只保留该日志的相对时间和分配值，无设备/进程标识。
+回放使用最后一次记录的分配保持到下一条记录；未记录的回调与编码行为变化后的网络响应无法重建。
+修正前该回放始终停在 480 档；修正后能到达 854 档。它验证策略不再被自身爬升挡住，
+不等于在真实网络上已经达到 854 或保证持续带宽。
+`BudgetRecoveryTest` 同时覆盖瞬时高预算不跳档、短暂回落重启窗口、稀疏回调、零预算/恢复、
+运营上限、用户帧率上限和时钟回退。`EncoderFeedbackTest` 验证新预算会在下一次轮询实际送入 codec 绑定。

@@ -63,7 +63,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private final VideoAdaptationPolicy adaptation;
     private final Object feedbackLock = new Object();
     private int pendingBitrate = -1;
-    private int latestBudgetBps = -1;
     private long lastAdaptLogMs = Long.MIN_VALUE;
     private final VideoPipelineStats pipelineStats = new VideoPipelineStats();
     private boolean pendingKeyFrame;
@@ -492,7 +491,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         synchronized (feedbackLock) {
             adaptation.observe(bps, SystemClock.elapsedRealtime());
             pendingBitrate = adaptation.budget();
-            latestBudgetBps = pendingBitrate;
             // Observe every feedback event, even if codec reset coalesces multiple callbacks.
             // Otherwise a short budget dip/zero can disappear before applyFeedback sees it.
             long nowMs = SystemClock.elapsedRealtime();
@@ -520,7 +518,6 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             pendingPeerRefresh = true;
             pendingKeyFrame = false;
             adaptation.reset();
-            latestBudgetBps = -1;
             pendingBitrate = -1;
         }
     }
@@ -536,11 +533,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
         BitrateLadder.Level level;
         float tierFps;
         synchronized (feedbackLock) {
-            // Advance the bounded ramp and tier timers under the active SetRates grant, including callback gaps.
+            // Advance only tier timers under the active SetRates grant, including callback gaps.
             boolean tierChanged = adaptation.tick(SystemClock.elapsedRealtime());
             int currentBudget = adaptation.budget();
-            bps = pendingBitrate >= 0 || tierChanged || currentBudget != latestBudgetBps ? currentBudget : -1;
-            latestBudgetBps = currentBudget;
+            bps = pendingBitrate >= 0 || tierChanged ? currentBudget : -1;
             pendingBitrate = -1;
             keyFrame = pendingKeyFrame;
             pendingKeyFrame = false;

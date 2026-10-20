@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='encoder-feedback-', dir=root / 'tests')
     actual = ['AsyncProcessor.java', 'model/ConfigurationException.java', 'video/SurfaceEncoder.java',
               'video/SurfaceCapture.java', 'video/VideoConstraints.java', 'video/CaptureControl.java',
               'video/CaptureRefreshGate.java', 'video/KeyFrameRequestGate.java', 'video/VideoPipelineStats.java',
-              'video/BitrateLadder.java', 'video/BitrateRampProbe.java', 'video/VideoAdaptationPolicy.java']
+              'video/BitrateLadder.java', 'video/VideoAdaptationPolicy.java']
     subprocess.run([os.environ.get('JAVA', 'java'), '-m', 'jdk.compiler/com.sun.tools.javac.Main', '-d', temporary,
                     *paths, *(str(base / name) for name in actual), str(root / 'tests/EncoderFeedbackTest.java')], check=True)
     subprocess.run([os.environ.get('JAVA', 'java'), '-cp', temporary, 'EncoderFeedbackTest'], check=True)
