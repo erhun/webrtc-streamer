@@ -3,14 +3,10 @@ package com.genymobile.scrcpy.video;
 /** Pure policy: network observations select a tier; only SurfaceEncoder may operate MediaCodec. */
 public final class VideoAdaptationPolicy {
     public static final BitrateLadder.Level[] CLOUD_PHONE_LEVELS = {
-        new BitrateLadder.Level(480, 10, 250000),
-        new BitrateLadder.Level(640, 15, 500000),
-        new BitrateLadder.Level(854, 24, 800000),
-        new BitrateLadder.Level(960, 30, 1200000),
-        new BitrateLadder.Level(1280, 30, 2500000),
-        new BitrateLadder.Level(1280, 60, 3000000),
-        new BitrateLadder.Level(1600, 60, 4000000),
-        new BitrateLadder.Level(1920, 60, 6000000),
+        new BitrateLadder.Level(854, 20, 800000),
+        new BitrateLadder.Level(960, 25, 1200000),
+        new BitrateLadder.Level(1280, 30, 3000000),
+        new BitrateLadder.Level(1920, 30, 4000000),
     };
     private final BitrateLadder ladder;
     private final int maximumBps;
