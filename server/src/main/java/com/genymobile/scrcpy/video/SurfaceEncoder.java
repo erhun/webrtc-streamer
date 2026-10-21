@@ -37,6 +37,16 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private static final int DEFAULT_I_FRAME_INTERVAL = 60; // 60秒 GOP，关键帧依靠 RTC PLI 动态请求
     private static final String KEY_MAX_FPS_TO_ENCODER = "max-fps-to-encoder";
 
+    // A restarted MediaCodec emits SPS/PPS+IDR on its first frame. A sync-frame request fired within
+    // this window -- typically `keyFrame |= suspended` after WebRTC sends a bps=0 pause during the
+    // reconfigure (InitEncode on a resolution change) -- would add a SECOND IDR ~60ms later (observed
+    // up to 47KB+44KB = ~90KB / 735kbit instantaneous burst). That shocks the pacer, trips GoogCC's
+    // delay-based overuse, and collapses the estimate right after an upgrade, which forces the
+    // downgrade that triggers the next reset: the oscillation amplifier. The reset's own IDR already
+    // gives every sink a clean picture, so the redundant request is dropped. A genuine later PLI still
+    // re-requests once the window lapses.
+    private static final long POST_RESET_KEY_FRAME_GRACE_MS = 1000;
+
     private static final int[] MAX_SIZE_FALLBACK = {2560, 1920, 1600, 1280, 1024, 800, 640, 480, 320};
     private static final int MAX_CONSECUTIVE_ERRORS = 3;
 
@@ -73,6 +83,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private int adaptiveMaxSize;
     private boolean suspended;
     private boolean waitingForKeyFrame;
+    // Encoder-thread only: set when a fresh MediaCodec starts, read by applyFeedback's grace window.
+    private long codecStartedMs = Long.MIN_VALUE;
 
     // Configured FPS changes rebuild the codec so its surface-input limit is updated.
     private float encoderFps;
@@ -198,6 +210,9 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     mediaCodec.start();
                     streamer.reportVideoBitrate(videoBitRate);
                     mediaCodecStarted = true;
+                    // The fresh codec's first output frame is SPS/PPS+IDR; start the grace window that
+                    // suppresses a redundant sync-frame request (see POST_RESET_KEY_FRAME_GRACE_MS).
+                    codecStartedMs = SystemClock.elapsedRealtime();
 
                     captureControl.setRunningMediaCodec(mediaCodec);
 
@@ -528,6 +543,8 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
 
         int bps;
         boolean keyFrame;
+        boolean keyFrameFromPending = false;
+        boolean keyFrameFromSuspended = false;
         boolean peerRefresh;
         boolean captureRefresh;
         BitrateLadder.Level level;
@@ -539,6 +556,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             bps = pendingBitrate >= 0 || tierChanged ? currentBudget : -1;
             pendingBitrate = -1;
             keyFrame = pendingKeyFrame;
+            keyFrameFromPending = keyFrame;
             pendingKeyFrame = false;
             peerRefresh = pendingPeerRefresh;
             pendingPeerRefresh = false;
@@ -584,6 +602,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 suspended = true;
                 waitingForKeyFrame = true;
             } else {
+                keyFrameFromSuspended = suspended;
                 keyFrame |= suspended;
                 suspended = false;
 
@@ -637,10 +656,24 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
 
         // ============ 动态请求关键帧 (Sync Frame) ============
         if (keyFrame && !captureControl.isResetRequested()) {
+            long sinceCodecStartMs = SystemClock.elapsedRealtime() - codecStartedMs;
+            if (codecStartedMs != Long.MIN_VALUE && sinceCodecStartMs >= 0
+                    && sinceCodecStartMs < POST_RESET_KEY_FRAME_GRACE_MS) {
+                // The reset above recreates a fresh codec whose first frame is already SPS/PPS+IDR. The
+                // `pendingKeyFrame` path is handled by not setting it there, but `keyFrame |= suspended`
+                // (a bps=0 pause during the reconfigure) still reaches here and would emit a SECOND IDR
+                // ~60ms later. That burst is the oscillation amplifier, so drop it: the reset's own IDR
+                // already gives every sink a clean picture. A genuine PLI re-requests after the window.
+                Ln.i("Suppressed redundant sync-frame request " + sinceCodecStartMs + "ms after codec start"
+                        + " (pendingKeyFrame=" + keyFrameFromPending + " suspended=" + keyFrameFromSuspended + ")");
+                return;
+            }
             if (!keyFrameRequests.allow(SystemClock.elapsedRealtime())) {
                 synchronized (feedbackLock) { pendingKeyFrame = true; }
                 return;
             }
+            Ln.i("Requesting sync frame: sinceCodecStart=" + sinceCodecStartMs + "ms"
+                    + " pendingKeyFrame=" + keyFrameFromPending + " suspended=" + keyFrameFromSuspended);
             Bundle params = new Bundle();
             params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
             codec.setParameters(params);
