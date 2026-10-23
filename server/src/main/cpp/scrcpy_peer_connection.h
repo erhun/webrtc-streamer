@@ -28,7 +28,7 @@ public:
     bool Initialize(webrtc::scoped_refptr<EncodedVideoTrackSource> track_source,
             bool audio,
             const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
-            int min_port, int max_port,
+            int min_port, int max_port, int max_bitrate_bps,
             std::function<void(int, double)> bitrate, std::function<void()> keyframe,
             webrtc::Thread* network_thread, webrtc::Thread* worker_thread, webrtc::Thread* signaling_thread);
     void SetConfiguredVideoBitrate(int bps) { configured_bps_.store(bps); }
@@ -73,6 +73,7 @@ private:
     std::atomic<int> target_bps_{-1};
     std::atomic<int64_t> bandwidth_allocation_bps_{-1};
     std::atomic<int64_t> rate_updated_us_{-1};
+    int max_bitrate_bps_ = 0;
     bool stats_pending_ = false;
     TelemetryGate telemetry_gate_;
     uint64_t recovery_generation_ = 0;

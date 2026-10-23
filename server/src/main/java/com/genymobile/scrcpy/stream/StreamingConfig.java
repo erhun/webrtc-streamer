@@ -21,6 +21,7 @@ public final class StreamingConfig {
     public final BitrateAggregator.Policy bandwidthPolicy;
     public final int minimumMediaPort;
     public final int maximumMediaPort;
+    public final int videoBitRate;
 
     public StreamingConfig(Options options) {
         if (!options.getSignalDebug() && options.getSignalToken().length() < 32) {
@@ -45,6 +46,7 @@ public final class StreamingConfig {
                 ? BitrateAggregator.Policy.CONTROLLER : BitrateAggregator.Policy.MINIMUM;
         minimumMediaPort = options.getLocalMinPort();
         maximumMediaPort = options.getLocalMaxPort();
+        videoBitRate = options.getVideoBitRate();
         if (!((minimumMediaPort == 0 && maximumMediaPort == 0)
                 || (minimumMediaPort > 0 && maximumMediaPort >= minimumMediaPort && maximumMediaPort <= 65535))) {
             throw new IllegalArgumentException("Media ports must be 0/0 or a valid local_min_port..local_max_port range");

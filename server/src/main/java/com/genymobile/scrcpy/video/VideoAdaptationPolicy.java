@@ -5,7 +5,7 @@ public final class VideoAdaptationPolicy {
     public static final BitrateLadder.Level[] CLOUD_PHONE_LEVELS = {
         new BitrateLadder.Level(854, 20, 800000),
         new BitrateLadder.Level(960, 25, 1200000),
-        new BitrateLadder.Level(1280, 30, 3000000),
+        new BitrateLadder.Level(1280, 30, 2600000),
     };
     private final BitrateLadder ladder;
     private final int maximumBps;

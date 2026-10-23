@@ -73,6 +73,7 @@ public:
 
     void OnFailure(webrtc::RTCError error) override {
         if (lifetime_.expired()) { return; }
+        SCP_LOGE("CreateAnswer failed: %s", error.message());
         owner_->OnConnectionClosed();
     }
 
@@ -90,7 +91,10 @@ public:
         if (lifetime_.expired()) { return; }
         if (error.ok()) {
             owner_->OnRemoteDescriptionSet();
-        } else { owner_->OnConnectionClosed(); }
+        } else {
+            SCP_LOGE("SetRemoteDescription failed: %s", error.message());
+            owner_->OnConnectionClosed();
+        }
     }
 
 private:
@@ -107,7 +111,10 @@ public:
         if (lifetime_.expired()) { return; }
         if (error.ok()) {
             owner_->OnLocalDescriptionSet();
-        } else { owner_->OnConnectionClosed(); }
+        } else {
+            SCP_LOGE("SetLocalDescription failed: %s", error.message());
+            owner_->OnConnectionClosed();
+        }
     }
 
 private:
@@ -202,11 +209,12 @@ ScrcpyPeerConnection::~ScrcpyPeerConnection() {
 bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSource> track_source,
         bool audio,
         const std::string& turn_url, const std::string& turn_user, const std::string& turn_password,
-        int min_port, int max_port,
+        int min_port, int max_port, int max_bitrate_bps,
         std::function<void(int, double)> bitrate, std::function<void()> keyframe,
         webrtc::Thread* network_thread, webrtc::Thread* worker_thread, webrtc::Thread* signaling_thread) {
     video_source_ = track_source;
     keyframe_callback_ = keyframe;
+    max_bitrate_bps_ = max_bitrate_bps;
     network_thread_ = network_thread;
     worker_thread_ = worker_thread;
     signaling_thread_ = signaling_thread;
@@ -227,6 +235,9 @@ bool ScrcpyPeerConnection::Initialize(webrtc::scoped_refptr<EncodedVideoTrackSou
         // Probes/padding are paced by WebRTC and evaluated from transport feedback.
         // Java does not manufacture load by exceeding SetRates. Intra-refresh is optional;
         // join/recovery still produce IDRs, whose requests must be coalesced at the source.
+        // alr_probing restored: without it the low-bitrate ramp-up starves (no loss/delay signal
+        // while application-limited, 66s to reach 600kbps). With the 3M ceiling the probe can
+        // no longer overshoot the ~3.77M link bottleneck, so its old seesaw side effect is gone.
         static webrtc::FieldTrials field_trials(
                 "WebRTC-VideoRateControl/alr_probing:true/"
                 "WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:100/"
@@ -314,6 +325,15 @@ bool ScrcpyPeerConnection::CreatePeerConnection() {
         auto audio_track = factory_->CreateAudioTrack("audio", audio_source_.get());
         if (!audio_track || !peer_connection_->AddTrack(audio_track, {"scrcpy"}).ok()) { return false; }
     }
+    if (max_bitrate_bps_ > 0) {
+        // Cap GoogCC's estimate and its probe ceiling at the configured maximum. Without this
+        // limit the prober keeps climbing past real uplink capacity (5~6Mbps), the resulting
+        // loss triggers AIMD's multiplicative decrease, and the encoder target cyclically
+        // collapses (4M -> 2.6M) — the "quality seesaw" every panel metric rides.
+        webrtc::BitrateSettings limits;
+        limits.max_bitrate_bps = max_bitrate_bps_;
+        peer_connection_->SetBitrate(limits);
+    }
     return true;
 }
 
@@ -359,6 +379,7 @@ void ScrcpyPeerConnection::OnConnectionInterrupted() {
     }, webrtc::TimeDelta::Seconds(45));
 }
 void ScrcpyPeerConnection::OnConnectionClosed() {
+    SCP_LOGE("PeerConnection closed (observer failure path)");
     if (closed_callback_) { closed_callback_(); }
 }
 
@@ -492,6 +513,7 @@ void ScrcpyPeerConnection::OnOffer(const std::string& sdp) {
     std::unique_ptr<webrtc::SessionDescriptionInterface> desc =
             webrtc::CreateSessionDescription(webrtc::SdpType::kOffer, sdp);
     if (desc == nullptr) {
+        SCP_LOGE("Failed to parse remote offer SDP (%zu bytes)", sdp.size());
         return;
     }
     remote_description_set_ = false;
@@ -528,6 +550,7 @@ void ScrcpyPeerConnection::OnAnswerCreated(std::unique_ptr<webrtc::SessionDescri
 }
 
 void ScrcpyPeerConnection::OnLocalDescriptionSet() {
+    SCP_LOGE("Local description set: answer delivered");
     // Reapply after negotiation and report the negotiated transport-feedback extension.
     for (const auto& sender : peer_connection_->GetSenders()) {
         auto track = sender->track();

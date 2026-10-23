@@ -72,7 +72,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.IBinder;
 public class Service extends Context {
-    public static final int START_NOT_STICKY = 2, STOP_FOREGROUND_REMOVE = 1;
+    public static final int START_NOT_STICKY = 2, START_REDELIVER_INTENT = 3, STOP_FOREGROUND_REMOVE = 1;
     public boolean foreground, rejectForeground; public int foregroundType, stoppedId;
     public Notification notification;
     public void onCreate() {}
@@ -100,7 +100,7 @@ import android.content.Context;
 public final class RuntimeContext { public static void initialize(Context context) {} }
 """,
         "com/genymobile/scrcpy/util/Ln.java": """package com.genymobile.scrcpy.util;
-public final class Ln { public static void i(String s) {} public static void w(String s) {} public static void e(String s, Throwable t) {} }
+public final class Ln { public static void i(String s) {} public static void w(String s) {} public static void e(String s) {} public static void e(String s, Throwable t) {} }
 """,
         "com/genymobile/scrcpy/Server.java": """package com.genymobile.scrcpy;
 import android.content.Context;
@@ -108,7 +108,11 @@ import android.app.Service;
 public final class Server {
     public static int runCalls; public static boolean unavailable;
     public static String[] receivedArgs; public static Runnable finished; public static Session lastSession;
-    public static final class Session { public boolean stopped; public void stop() { stopped = true; } }
+    public static final class Session {
+        public boolean stopped, stopRequested;
+        public void stop() { stopRequested = true; stopped = true; }
+        public boolean wasStopRequested() { return stopRequested; }
+    }
     public static Session run(Context context, String[] args, Runnable completion) {
         if (!((Service) context).foreground) { throw new AssertionError("Capture started before foreground promotion"); }
         runCalls++; receivedArgs = args; finished = completion;

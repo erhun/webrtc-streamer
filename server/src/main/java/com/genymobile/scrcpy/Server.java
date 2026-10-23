@@ -150,46 +150,44 @@ public final class Server {
                 } else {
                     audioCodec = options.getAudioCodec();
                 }
-                AudioSource audioSource = options.getAudioSource();
-                AudioCapture audioCapture;
-                if (audioSource.isDirect()) {
-                    audioCapture = new AudioDirectCapture(audioSource, context);
-                } else {
-                    audioCapture = new AudioPlaybackCapture(context);
-                }
 
-                audioSink = streaming != null ? streaming.audioSink()
+                final PacketSink audioStream = streaming != null ? streaming.audioSink()
                         : new Streamer(connection.getAudioFd(), audioCodec, options.getSendStreamMeta(), options.getSendFrameMeta());
-                AsyncProcessor audioRecorder;
-                if (audioCodec == AudioCodec.RAW) {
-                    audioRecorder = new AudioRawRecorder(audioCapture, audioSink);
+                audioSink = audioStream;
+                AudioCodec selectedAudioCodec = audioCodec;
+                if (streaming != null) {
+                    // Audio is a companion stream: a persistent capture failure disables audio but must
+                    // not take down the resident video/control session.
+                    asyncProcessors.add(new RestartableProcessor(
+                            () -> createAudioProcessor(options, context, selectedAudioCodec, audioStream), false));
                 } else {
-                    audioRecorder = new AudioEncoder(audioCapture, audioSink, options);
+                    asyncProcessors.add(createAudioProcessor(options, context, selectedAudioCodec, audioStream));
                 }
-                asyncProcessors.add(audioRecorder);
             }
 
             if (video) {
-                videoSink = streaming != null ? streaming.videoSink()
+                final PacketSink videoStream = streaming != null ? streaming.videoSink()
                         : new Streamer(connection.getVideoFd(), options.getVideoCodec(), options.getSendStreamMeta(), options.getSendFrameMeta());
-                SurfaceCapture surfaceCapture;
-                if (options.getVideoSource() == VideoSource.DISPLAY) {
-                    NewDisplay newDisplay = options.getNewDisplay();
-                    if (newDisplay != null) {
-                        surfaceCapture = new NewDisplayCapture(controller, options);
-                    } else {
-                        assert options.getDisplayId() != Device.DISPLAY_ID_NONE;
-                        surfaceCapture = new ScreenCapture(controller, options);
-                    }
+                videoSink = videoStream;
+                if (streaming != null) {
+                    // The video pipeline is the session core: rebuild it on transient codec
+                    // failures, and only a persistent failure terminates the whole session.
+                    final Controller videoController = controller;
+                    final StreamingSession videoStreaming = streaming;
+                    asyncProcessors.add(new RestartableProcessor(() -> {
+                        SurfaceCapture surfaceCapture = createSurfaceCapture(options, videoController);
+                        SurfaceEncoder surfaceEncoder = new SurfaceEncoder(surfaceCapture, videoStream, options);
+                        videoStreaming.setEncoder(surfaceEncoder);
+                        if (videoController != null) { videoController.setSurfaceCapture(surfaceCapture); }
+                        return surfaceEncoder;
+                    }, true));
                 } else {
-                    surfaceCapture = new CameraCapture(options);
-                }
-                SurfaceEncoder surfaceEncoder = new SurfaceEncoder(surfaceCapture, videoSink, options);
-                if (streaming != null) { streaming.setEncoder(surfaceEncoder); }
-                asyncProcessors.add(surfaceEncoder);
-
-                if (controller != null) {
-                    controller.setSurfaceCapture(surfaceCapture);
+                    SurfaceCapture surfaceCapture = createSurfaceCapture(options, controller);
+                    SurfaceEncoder surfaceEncoder = new SurfaceEncoder(surfaceCapture, videoStream, options);
+                    asyncProcessors.add(surfaceEncoder);
+                    if (controller != null) {
+                        controller.setSurfaceCapture(surfaceCapture);
+                    }
                 }
             }
 
@@ -249,11 +247,51 @@ public final class Server {
         }
     }
 
+    private static void installUncaughtExceptionHandler() {
+        Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            Ln.e("Exception on thread " + t, e);
+            if (defaultHandler != null) {
+                defaultHandler.uncaughtException(t, e);
+            }
+        });
+    }
+
+    /** Creates the capture-side of the video pipeline; each resident rebuild gets a fresh instance. */
+    private static SurfaceCapture createSurfaceCapture(Options options, Controller controller) {
+        if (options.getVideoSource() == VideoSource.DISPLAY) {
+            NewDisplay newDisplay = options.getNewDisplay();
+            if (newDisplay != null) {
+                return new NewDisplayCapture(controller, options);
+            }
+            assert options.getDisplayId() != Device.DISPLAY_ID_NONE;
+            return new ScreenCapture(controller, options);
+        }
+        return new CameraCapture(options);
+    }
+
+    private static AsyncProcessor createAudioProcessor(Options options, Context context, AudioCodec audioCodec, PacketSink audioSink) {
+        AudioSource audioSource = options.getAudioSource();
+        AudioCapture audioCapture;
+        if (audioSource.isDirect()) {
+            audioCapture = new AudioDirectCapture(audioSource, context);
+        } else {
+            audioCapture = new AudioPlaybackCapture(context);
+        }
+        if (audioCodec == AudioCodec.RAW) {
+            return new AudioRawRecorder(audioCapture, audioSink);
+        }
+        return new AudioEncoder(audioCapture, audioSink, options);
+    }
+
     public static final class Session {
         public enum State { STARTING, RUNNING, STOPPING, STOPPED }
         private State state = State.STARTING;
         private Looper looper;
+        private boolean stopRequested;
         public synchronized State getState() { return state; }
+        /** A resident service distinguishes a deliberate stop from a session failure on this flag. */
+        public synchronized boolean wasStopRequested() { return stopRequested; }
         private synchronized void attach(Looper value) {
             looper = value;
             if (state == State.STOPPING) { looper.quitSafely(); }
@@ -261,6 +299,7 @@ public final class Server {
         }
         public synchronized void stop() {
             if (state == State.STOPPED) { return; }
+            stopRequested = true;
             state = State.STOPPING;
             if (looper != null) { looper.quitSafely(); }
         }
@@ -276,6 +315,7 @@ public final class Server {
             Looper.prepare();
             session.attach(Looper.myLooper());
             try {
+                installUncaughtExceptionHandler();
                 Options options = Options.parse(args);
                 Ln.disableSystemStreams();
                 Ln.initLogLevel(options.getLogLevel());
@@ -308,13 +348,7 @@ public final class Server {
     }
 
     private static void internalMain(String... args) throws Exception {
-        Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
-            Ln.e("Exception on thread " + t, e);
-            if (defaultHandler != null) {
-                defaultHandler.uncaughtException(t, e);
-            }
-        });
+        installUncaughtExceptionHandler();
 
         if (!RuntimeContext.isShellRuntime()) {
             throw new IllegalStateException("System applications must start ServerService, not the shell main entry point");

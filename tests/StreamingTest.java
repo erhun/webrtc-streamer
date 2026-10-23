@@ -1,6 +1,7 @@
 import com.genymobile.scrcpy.device.DataChannelInputStream;
 import com.genymobile.scrcpy.video.CaptureRefreshGate;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 public final class StreamingTest {
     private static void check(boolean value) { if (!value) { throw new AssertionError(); } }
     public static void main(String[] args) throws Exception {
@@ -30,8 +31,7 @@ public final class StreamingTest {
         check(!earlyRate.consumeBootstrapRefresh(true)); // Coalesce with send-ready refresh.
         check(earlyRate.consumeRefresh());
         // Tier stability and sparse rate feedback are covered by VideoAdaptationTest.
-        AtomicBoolean overflow = new AtomicBoolean();
-        DataChannelInputStream stream = new DataChannelInputStream(() -> overflow.set(true));
+        DataChannelInputStream stream = new DataChannelInputStream();
         stream.onData(new byte[0]); stream.onData(new byte[]{1, 2}); stream.onData(new byte[]{3});
         check(stream.read() == 1 && stream.read() == 2 && stream.read() == 3);
         AtomicBoolean ended = new AtomicBoolean();
@@ -39,8 +39,16 @@ public final class StreamingTest {
             try { ended.set(stream.read() == -1); } catch (Exception e) { throw new RuntimeException(e); }
         });
         reader.start(); stream.close(); reader.join(1000); check(!reader.isAlive() && ended.get());
-        DataChannelInputStream full = new DataChannelInputStream(() -> overflow.set(true));
-        full.onData(new byte[1048576]); full.onData(new byte[]{1}); check(overflow.get() && full.read() == -1);
+        DataChannelInputStream mixed = new DataChannelInputStream(sender -> { });
+        mixed.onData(new byte[]{1}, "room/a"); mixed.onData(new byte[]{2}, "room/b"); mixed.onData(new byte[]{3}, "room/a");
+        check(mixed.read() == 1 && mixed.read() == 2 && mixed.read() == 3); // Interleaved senders keep FIFO order.
+        AtomicReference<String> flooder = new AtomicReference<>();
+        DataChannelInputStream full = new DataChannelInputStream(flooder::set);
+        full.onData(new byte[1048576], "room/attacker");
+        full.onData(new byte[1048576], "room/attacker"); // The second megabyte overflows the backlog.
+        check("room/attacker".equals(flooder.get())); // The flooding sender is reported, not the whole session.
+        full.onData(new byte[]{7}, "room/spectator");
+        check(full.read() == 7); // The flooding backlog is drained and the input stays alive.
         System.out.println("Java streaming regressions passed");
     }
 }

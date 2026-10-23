@@ -1,9 +1,16 @@
 package com.genymobile.scrcpy.device;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import com.genymobile.scrcpy.util.Ln;
 
-/** Per-session JNI handle. Callback entry points never acquire its monitor. */
+/**
+ * Per-session JNI handle. Callback entry points never acquire its monitor, and they never run on
+ * native threads: each entry point only enqueues onto a shared FIFO executor. A native WebRTC
+ * thread (signaling in particular) must never block on a Java monitor, otherwise a Java thread
+ * holding this monitor inside a BlockingCall deadlocks against the callback path.
+ */
 public final class NativeEncoderBridge implements AutoCloseable {
     public interface Callback {
         void onBitrate(int bps, double fps);
@@ -18,6 +25,12 @@ public final class NativeEncoderBridge implements AutoCloseable {
         void onData(byte[] data);
     }
     static { System.loadLibrary("scrcpy_native"); }
+    /** FIFO dispatch shared by all bridges; preserves the relative order of native events. */
+    private static final ExecutorService NATIVE_CALLBACKS = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "native-callbacks");
+        thread.setDaemon(true);
+        return thread;
+    });
     private long handle;
     private volatile Callback callback;
     private volatile SignalCallback signalCallback;
@@ -26,12 +39,13 @@ public final class NativeEncoderBridge implements AutoCloseable {
     private long pcmPushCount;
 
     public synchronized void open(boolean audio, int audioScheme, String turn, String user, String password) {
-        open(audio, audioScheme, turn, user, password, 0, 0);
+        open(audio, audioScheme, turn, user, password, 0, 0, 0);
     }
-    public synchronized void open(boolean audio, int audioScheme, String turn, String user, String password, int minPort, int maxPort) {
+    public synchronized void open(boolean audio, int audioScheme, String turn, String user, String password,
+            int minPort, int maxPort, int maxVideoBitrate) {
         if (handle != 0) { throw new IllegalStateException("Session already open"); }
         if (audioScheme != 0) { throw new IllegalArgumentException("WebRTC audio requires PCM input"); }
-        handle = nativeCreate(audio, audioScheme, turn, user, password, minPort, maxPort);
+        handle = nativeCreate(audio, audioScheme, turn, user, password, minPort, maxPort, maxVideoBitrate);
         if (handle == 0) { throw new IllegalStateException("Could not create WebRTC session"); }
     }
     public void setCallback(Callback value) { callback = value; }
@@ -100,25 +114,39 @@ public final class NativeEncoderBridge implements AutoCloseable {
     private static byte[] copy(ByteBuffer buffer) {
         byte[] data = new byte[buffer.remaining()]; buffer.get(data); return data;
     }
+    /** Read the target at dispatch time so a close() clearing it also cancels still-queued events. */
     private void onNativeBitrate(int bps, double fps) {
-        Callback target = callback; if (target != null) { target.onBitrate(bps, fps); }
+        NATIVE_CALLBACKS.execute(() -> {
+            Callback target = callback; if (target != null) { target.onBitrate(bps, fps); }
+        });
     }
     private void onNativeKeyFrame() {
-        Callback target = callback; if (target != null) { target.onKeyFrameRequest(); }
+        NATIVE_CALLBACKS.execute(() -> {
+            Callback target = callback; if (target != null) { target.onKeyFrameRequest(); }
+        });
     }
     private void onNativeAnswer(String sdp) {
-        SignalCallback target = signalCallback; if (target != null) { target.onAnswer(sdp); }
+        NATIVE_CALLBACKS.execute(() -> {
+            SignalCallback target = signalCallback; if (target != null) { target.onAnswer(sdp); }
+        });
     }
     private void onNativeIce(String mid, int index, String sdp) {
-        SignalCallback target = signalCallback; if (target != null) { target.onIceCandidate(mid, index, sdp); }
+        NATIVE_CALLBACKS.execute(() -> {
+            SignalCallback target = signalCallback; if (target != null) { target.onIceCandidate(mid, index, sdp); }
+        });
     }
     private void onNativeData(byte[] data) {
-        DataCallback target = dataCallback; if (target != null) { target.onData(data); }
+        NATIVE_CALLBACKS.execute(() -> {
+            DataCallback target = dataCallback; if (target != null) { target.onData(data); }
+        });
     }
     private void onNativeClosed() {
-        Runnable target = closedCallback; if (target != null) { target.run(); }
+        NATIVE_CALLBACKS.execute(() -> {
+            Runnable target = closedCallback; if (target != null) { target.run(); }
+        });
     }
-    private native long nativeCreate(boolean audio, int audioScheme, String turn, String user, String password, int minPort, int maxPort);
+    private native long nativeCreate(boolean audio, int audioScheme, String turn, String user, String password, int minPort, int maxPort,
+            int maxVideoBitrate);
     private native void nativeDestroy(long session);
     private native void nativePushVideo(long session, byte[] data, long pts, boolean config, boolean key, int width, int height);
     private native void nativePushPcm(long session, byte[] data, long pts);

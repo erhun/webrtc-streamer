@@ -109,7 +109,7 @@ extern "C" {
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) { jvm = vm; return JNI_VERSION_1_6; }
 JNIEXPORT jlong JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_nativeCreate(
         JNIEnv* env, jobject bridge, jboolean audio, jint audio_scheme, jstring turn, jstring user, jstring password,
-        jint min_port, jint max_port) {
+        jint min_port, jint max_port, jint max_video_bitrate) {
     auto session = std::make_unique<Session>();
     auto cb = std::make_shared<Callbacks>(env, bridge);
     session->callbacks = cb;
@@ -119,6 +119,7 @@ JNIEXPORT jlong JNICALL Java_com_genymobile_scrcpy_device_NativeEncoderBridge_na
     session->pc = std::make_unique<scrcpy::ScrcpyPeerConnection>();
     if (audio_scheme != 0) { return 0; } // WebRTC always uses PCM -> built-in Opus.
     if (!session->pc->Initialize(session->video, audio, String(env, turn), String(env, user), String(env, password), min_port, max_port,
+            max_video_bitrate,
             [cb](int bps, double fps) { cb->Call([&](JNIEnv* e, jobject o) { e->CallVoidMethod(o, cb->bitrate, bps, fps); }); },
             [cb] { cb->Call([&](JNIEnv* e, jobject o) { e->CallVoidMethod(o, cb->keyframe); }); },
             session->core->network_thread.get(), session->core->worker_thread.get(), session->core->signaling_thread.get())) {

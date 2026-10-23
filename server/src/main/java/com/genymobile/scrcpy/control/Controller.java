@@ -79,6 +79,9 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
     // Interval between simulated user activity events
     private static final long KEEP_ACTIVE_INTERVAL_MS = 4000;
 
+    // A resident process must survive a misbehaving viewer: resync and keep going instead of dying.
+    private static final int MAX_CONSECUTIVE_PROTOCOL_ERRORS = 100;
+
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private ExecutorService startAppExecutor;
 
@@ -116,6 +119,8 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
 
     // Used for resetting video encoding on RESET_VIDEO message or for sending camera controls
     private SurfaceCapture surfaceCapture;
+
+    private int consecutiveProtocolErrors;
 
     public Controller(ControlChannel controlChannel, CleanUp cleanUp, Options options) {
         this.camera = options.getVideoSource() == VideoSource.CAMERA;
@@ -294,7 +299,9 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
                 if (uhidManager != null) {
                     uhidManager.closeAll();
                 }
-                listener.onTerminated(true);
+                // The control channel is shared and recoverable: its loss must never take down the
+                // resident capture session (the video pipeline keeps serving viewers).
+                listener.onTerminated(false);
             }
         }, "control-recv");
         thread.start();
@@ -333,11 +340,17 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
             Ln.d("Received control message type=" + msg.getType());
         } catch (ControlProtocolException e) {
             Ln.e("Control protocol error", e);
-            return false;
+            if (++consecutiveProtocolErrors > MAX_CONSECUTIVE_PROTOCOL_ERRORS) {
+                Ln.e("Too many consecutive control protocol errors, giving up control");
+                return false;
+            }
+            controlChannel.reset();
+            return true;
         } catch (IOException e) {
             // this is expected on close
             return false;
         }
+        consecutiveProtocolErrors = 0;
 
         int type = msg.getType();
 
@@ -449,7 +462,8 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
             }
         }
 
-        throw new AssertionError("Unexpected message type: " + type);
+        Ln.e("Unexpected control message type ignored: " + type);
+        return true;
     }
 
     private void releaseInputs() {

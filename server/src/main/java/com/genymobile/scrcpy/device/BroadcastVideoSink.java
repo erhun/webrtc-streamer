@@ -1,5 +1,6 @@
 package com.genymobile.scrcpy.device;
 
+import com.genymobile.scrcpy.util.Ln;
 import com.genymobile.scrcpy.video.VideoCodec;
 
 import android.media.MediaCodec;
@@ -45,17 +46,22 @@ public final class BroadcastVideoSink implements PacketSink {
             return;
         }
         for (Subscription sub : subscribers) {
-            long generation = sub.generation.get();
-            boolean waitingForKey = sub.sentGeneration != generation;
-            if (waitingForKey && !keyFrame) { continue; }
-            if (current.config == null) { continue; }
-            if (sub.sentFormat != current || waitingForKey) {
-                if (!keyFrame) { continue; }
-                sub.bridge.pushEncodedVideoFrame(current.config, 0, true, false, current.width, current.height);
-                sub.sentFormat = current;
+            try {
+                long generation = sub.generation.get();
+                boolean waitingForKey = sub.sentGeneration != generation;
+                if (waitingForKey && !keyFrame) { continue; }
+                if (current.config == null) { continue; }
+                if (sub.sentFormat != current || waitingForKey) {
+                    if (!keyFrame) { continue; }
+                    sub.bridge.pushEncodedVideoFrame(current.config, 0, true, false, current.width, current.height);
+                    sub.sentFormat = current;
+                }
+                sub.bridge.pushEncodedVideoFrame(data, pts, false, keyFrame, current.width, current.height);
+                sub.sentGeneration = generation;
+            } catch (RuntimeException | LinkageError e) {
+                // One peer's transport must never kill the encoder thread of the resident session.
+                Ln.e("Video fan-out failed for one viewer", e);
             }
-            sub.bridge.pushEncodedVideoFrame(data, pts, false, keyFrame, current.width, current.height);
-            sub.sentGeneration = generation;
         }
     }
     @Override

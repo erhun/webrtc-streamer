@@ -17,7 +17,10 @@ import java.util.Set;
 
 /** Serializes authority changes with input delivery. Transport sends never run under the input lock. */
 public final class ControlManager {
-    public interface ControlForwarder { void forward(byte[] data); }
+    public interface ControlForwarder {
+        /** The sender identity rides along so a backlog overflow can isolate the flooding viewer. */
+        void forward(byte[] data, String sender);
+    }
     public interface ClientSender { void send(String message); }
     public interface OwnerObserver { void changed(String id); }
     private final Object lock = new Object();
@@ -83,13 +86,13 @@ public final class ControlManager {
             if (currentController == null) { currentController = id; granted = true; ownerChanged.changed(id); }
             if (!id.equals(currentController)) { return; }
             // Enqueue under the same lock as ownership changes: DOWN, release marker, then new owner's input.
-            if (controller != null) { controller.forward(data); }
+            if (controller != null) { controller.forward(data, id); }
         }
         if (granted) { broadcastControlState(); }
     }
     public String getCurrentController() { synchronized (lock) { return currentController; } }
     private void releaseInputsLocked() {
-        if (controller != null) { controller.forward(new byte[]{(byte) ControlMessage.TYPE_RELEASE_INPUTS}); }
+        if (controller != null) { controller.forward(new byte[]{(byte) ControlMessage.TYPE_RELEASE_INPUTS}, null); }
     }
     private void promoteNext() {
         while (!waitingQueue.isEmpty()) {

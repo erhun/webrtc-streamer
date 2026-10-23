@@ -13,6 +13,10 @@ export interface ScrcpyClientCallbacks {
 }
 const RECOVERY_MS = 30000;
 const CONTROL_HIGH_WATER = 131072;
+// Rejections meaning "this resume credential no longer identifies a live peer".
+// On any of them the client drops the cached session and silently re-joins, so a
+// browser refresh after a server restart (or against another instance) still streams.
+const RESUME_REJECTIONS: ReadonlySet<string> = new Set(['RESUME_TOKEN_INVALID', 'RESUME_EXPIRED', 'RESUME_NOT_AVAILABLE']);
 const REJECTION_MESSAGES: Record<string, string> = {
   LOGIN_TOKEN_USED: '首次登录凭证已使用，本次未使用有效的恢复凭证；请创建新会话',
   LOGIN_TOKEN_INVALID: '首次登录凭证不匹配，请检查连接地址和会话凭证',
@@ -136,7 +140,9 @@ export class ScrcpyClient {
       this.timeout = setTimeout(() => fail('网络恢复超时，请申请新会话后重试'), RECOVERY_MS);
       this.recoveryInterval = setInterval(() => {
         if (!current()) { return; }
-        if (!this.ws) { openSocket(); }
+        // A stale non-OPEN socket reference (close event not yet dispatched) must not block
+        // reconnecting; drop it and open a fresh socket for the resume attempt.
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) { this.ws = null; openSocket(); }
         else if (ready) {
           if (pc.connectionState === 'connected' && !awaitingAnswer) { recovered(); }
           else { void offer(true); }
@@ -229,7 +235,12 @@ export class ScrcpyClient {
             if (this.heartbeat) { clearInterval(this.heartbeat); }
             this.heartbeat = setInterval(() => {
               if (!active() || !ready || this.socketTimeout) { return; }
-              ws.send(JSON.stringify({ type: 'ping' }));
+              // A takeover (or transport drop) may leave the socket closing before the close
+              // event is dispatched; a blind send() then throws into the fail path and kills
+              // the page instead of entering recovery. Route heartbeat send failures to lost().
+              if (ws.readyState !== WebSocket.OPEN) { lost('信令心跳发现连接已断'); return; }
+              try { ws.send(JSON.stringify({ type: 'ping' })); }
+              catch { lost('信令心跳发送失败'); return; }
               this.socketTimeout = setTimeout(() => lost('信令心跳超时'), 5000);
             }, 3000);
             trace('服务端协议: v3');
@@ -261,12 +272,37 @@ export class ScrcpyClient {
       ws.onerror = () => lost('信令连接错误');
       ws.onclose = (event) => {
         if (!active()) { return; }
+        if (event.reason === 'Replaced by authenticated resume') {
+          // A new tab duplicated sessionStorage and resumed with our identity; the server moved
+          // the peer to it. Rejoining with a fresh identity keeps both tabs streaming as
+          // independent sessions instead of ping-ponging the single peer between them.
+          trace('会话已被同身份的新连接接管，改用全新会话加入');
+          this.resumeSecret = '';
+          forgetResumeSession(url.href);
+          this.clientId = newPeerId();
+          clearSocketTimeout();
+          this.ws = null;
+          openSocket();
+          return;
+        }
         const reason = Object.prototype.hasOwnProperty.call(REJECTION_MESSAGES, event.reason) ? event.reason
           : event.reason === 'Peer reset failed' ? event.reason : '未识别或未提供';
         trace(`WebSocket closed: code=${event.code} stage=${ready ? 'negotiation' : 'authentication'} reason=${reason}`);
         if (event.code === 1008) {
           if (event.reason === 'Peer reset failed') {
             fail('服务端连接重建失败，请重新编译 JNI 和 Android 服务端'); return;
+          }
+          if (this.resumeSecret && RESUME_REJECTIONS.has(event.reason)) {
+            // The cached resume credential no longer matches a live server-side peer.
+            // Discard it and retry once as a brand-new join; a join rejection still fails hard.
+            trace(`恢复凭证被拒（${event.reason}），改用全新会话加入`);
+            this.resumeSecret = '';
+            forgetResumeSession(url.href);
+            this.clientId = newPeerId();
+            clearSocketTimeout();
+            this.ws = null;
+            openSocket();
+            return;
           }
           fail(REJECTION_MESSAGES[reason] ?? '服务端拒绝连接（1008，未提供原因），请提供页面诊断日志');
         }

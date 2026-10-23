@@ -4,27 +4,76 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.Iterator;
 
 public class DataChannelInputStream extends InputStream implements NativeEncoderBridge.DataCallback {
+    public interface OverflowListener {
+        void onOverflow(String sender);
+    }
     private static final int MAX_BUFFERED_BYTES = 1048576;
-    private final Deque<byte[]> queue = new ArrayDeque<>();
-    private final Runnable overflow;
+    private final Deque<Chunk> queue = new ArrayDeque<>();
+    private final OverflowListener overflow;
     private byte[] current;
+    private String currentSender;
     private int position;
     private int buffered;
     private boolean closed;
-    public DataChannelInputStream() { this(() -> { }); }
-    public DataChannelInputStream(Runnable overflow) { this.overflow = overflow; }
+
+    public DataChannelInputStream() { this(sender -> { }); }
+    public DataChannelInputStream(OverflowListener overflow) { this.overflow = overflow; }
+
     @Override
     public void onData(byte[] data) {
-        boolean exceeded = false;
+        onData(data, null);
+    }
+
+    /** The sender identity is kept per chunk so an overflow isolates the flooding viewer, not the session. */
+    public void onData(byte[] data, String sender) {
+        String flooding = null;
         synchronized (this) {
             if (closed || data.length == 0) { return; }
-            if (data.length > MAX_BUFFERED_BYTES - buffered) { close(); exceeded = true; }
-            else { queue.addLast(data); buffered += data.length; notifyAll(); }
+            if (data.length > MAX_BUFFERED_BYTES - buffered) {
+                // Drop the incoming chunk and the flooder's backlog; the shared capture keeps running.
+                if (sender == null) {
+                    queue.clear();
+                    current = null;
+                    currentSender = null;
+                    buffered = 0;
+                } else {
+                    drain(sender);
+                }
+                flooding = sender;
+            } else {
+                queue.addLast(new Chunk(data, sender));
+                buffered += data.length;
+                notifyAll();
+            }
         }
-        if (exceeded) { overflow.run(); }
+        if (flooding != null) {
+            overflow.onOverflow(flooding);
+        }
     }
+
+    private void drain(String sender) {
+        for (Iterator<Chunk> it = queue.iterator(); it.hasNext(); ) {
+            if (sender.equals(it.next().sender)) {
+                it.remove();
+            }
+        }
+        if (current != null && sender.equals(currentSender)) {
+            current = null;
+            currentSender = null;
+            position = 0;
+        }
+        recomputeBuffered();
+    }
+
+    private void recomputeBuffered() {
+        int total = 0;
+        for (Chunk chunk : queue) { total += chunk.data.length; }
+        buffered = total;
+    }
+
     @Override
     public int read() throws IOException {
         byte[] one = new byte[1];
@@ -41,7 +90,12 @@ public class DataChannelInputStream extends InputStream implements NativeEncoder
             }
         }
         if (closed) { return -1; }
-        if (current == null || position == current.length) { current = queue.removeFirst(); position = 0; }
+        if (current == null || position == current.length) {
+            Chunk chunk = queue.removeFirst();
+            current = chunk.data;
+            currentSender = chunk.sender;
+            position = 0;
+        }
         int count = Math.min(len, current.length - position);
         System.arraycopy(current, position, b, off, count);
         position += count; buffered -= count;
@@ -49,6 +103,12 @@ public class DataChannelInputStream extends InputStream implements NativeEncoder
     }
     @Override
     public synchronized void close() {
-        closed = true; queue.clear(); current = null; buffered = 0; notifyAll();
+        closed = true; queue.clear(); current = null; currentSender = null; buffered = 0; notifyAll();
+    }
+
+    private static final class Chunk {
+        final byte[] data;
+        final String sender;
+        Chunk(byte[] data, String sender) { this.data = data; this.sender = sender; }
     }
 }

@@ -83,6 +83,10 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
     private int adaptiveMaxSize;
     private boolean suspended;
     private boolean waitingForKeyFrame;
+    // Encoder-thread only: slow-decrease debounce for the encoder target. A budget dip younger
+    // than this window is treated as transient GoogCC/AIMD noise and never reaches the codec.
+    private static final long TARGET_DIP_DEBOUNCE_MS = 3000;
+    private long lowBudgetSinceMs;
     // Encoder-thread only: set when a fresh MediaCodec starts, read by applyFeedback's grace window.
     private long codecStartedMs = Long.MIN_VALUE;
 
@@ -373,7 +377,15 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     if (bootstrap) {
                         Ln.d("Peer bootstrap: forwarding IDR to initialize native encoder");
                     }
-                    if (isConfig || bootstrap || (!suspended && (!waitingForKeyFrame || key))) {
+                    // A key frame must always flow, even while suspended. `suspended` is only cleared by a
+                    // positive aggregate rate, which is only reported once the native passthrough encoder
+                    // exists -- and that instance is created lazily on its FIRST frame. Dropping IDRs while
+                    // suspended is therefore self-deadlocking, and the one-shot bootstrap quota cannot save
+                    // it: the resetPeer bootstrap IDR is emitted before the replacing peer's answer even
+                    // exists (sinks=0 window), so the quota is consumed by a frame nobody receives. A key
+                    // frame is rare (GOP or reset) and small; forwarding it is the only way the VideoStream
+                    // encoder, its SetRates feedback, and finally `suspended=false` can ever resume.
+                    if (isConfig || bootstrap || key || (!suspended && !waitingForKeyFrame)) {
                         long handoffStartNs = System.nanoTime();
                         streamer.writePacket(codecBuffer, bufferInfo);
                         if (!isConfig) {
@@ -477,10 +489,17 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                 if (!IO.isBrokenPipe(e)) {
                     Ln.e("Video encoding error", e);
                 }
+            } catch (Throwable t) {
+                // A native/JNI failure on the fan-out path must not kill the process: report it as a
+                // pipeline failure so the supervisor can rebuild the capture.
+                Ln.e("Video pipeline crashed", t);
             } finally {
+                // An exit without stop() is unexpected while the session is alive; the termination
+                // listener decides between a rebuild (WebRTC) and the session teardown (TCP).
+                boolean unexpected = !stopped.get();
                 pipelineStats.close();
-                Ln.d("Screen streaming stopped");
-                listener.onTerminated(true);
+                Ln.d("Screen streaming stopped" + (unexpected ? " unexpectedly" : ""));
+                listener.onTerminated(unexpected);
             }
         }, "video");
         thread.start();
@@ -604,11 +623,38 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
             } else {
                 keyFrameFromSuspended = suspended;
                 keyFrame |= suspended;
+                if (suspended) {
+                    // Only a resumed feedback loop starts with a clean dip window. Resetting it on every
+                    // positive sample left the timer at 0 forever, so the slow-fall branch was unreachable
+                    // (0 "sustained" events in 2 minutes) and the codec kept sending at the tier nominal
+                    // rate while the transport budget was collapsing.
+                    lowBudgetSinceMs = 0;
+                }
                 suspended = false;
 
                 // Media stays within the current allocation. WebRTC's feedback-driven transport probes
                 // discover headroom; codec output must not be used as an unpaced capacity probe.
-                int targetBitrate = Math.max(1, bps);
+                // The tier's nominal bitrate is the quality budget: GoogCC estimate noise above it
+                // (probe oscillation around the link ceiling) must not translate frame-to-frame into
+                // encoder reconfiguration, only true congestion dips below the tier matter.
+                // Fast-rise, slow-fall: a dip below the applied target is held for the debounce
+                // window before it reaches the codec, so transient AIMD slashes never surface as
+                // visible quality drops; persistent congestion (dip outlives the window) is followed.
+                int requested = Math.max(1, Math.min(bps, level.getBitRate()));
+                int targetBitrate;
+                if (requested >= videoBitRate) {
+                    lowBudgetSinceMs = 0;
+                    targetBitrate = requested;
+                } else if (lowBudgetSinceMs == 0) {
+                    lowBudgetSinceMs = SystemClock.elapsedRealtime();
+                    targetBitrate = videoBitRate;
+                    Ln.d("Encoder target dip: requested=" + requested + " held at " + videoBitRate);
+                } else if (SystemClock.elapsedRealtime() - lowBudgetSinceMs < TARGET_DIP_DEBOUNCE_MS) {
+                    targetBitrate = videoBitRate;
+                } else {
+                    targetBitrate = requested; // Persistent congestion: follow the latest budget down.
+                    Ln.d("Encoder target dip sustained: " + videoBitRate + " -> " + requested);
+                }
                 float nextFps = adaptiveVideo ? tierFps : adaptiveFps;
                 int targetMaxSize = adaptiveVideo
                         ? (maxSize > 0 ? Math.min(maxSize, level.getMaxSize()) : level.getMaxSize()) : adaptiveMaxSize;
@@ -628,6 +674,7 @@ public class SurfaceEncoder implements AsyncProcessor, NativeEncoderBridge.Callb
                     adaptiveFps = nextFps;
                     videoBitRate = targetBitrate;
                     videoConstraints = videoConstraints.withMaxFps(nextFps);
+                    lowBudgetSinceMs = 0; // A codec reset re-enters the tier at the nominal budget.
                     needCodecReset = true;
                 } else {
                     // Only bitrate changes use a codec hot update.

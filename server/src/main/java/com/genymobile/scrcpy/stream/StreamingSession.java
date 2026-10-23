@@ -8,6 +8,7 @@ import com.genymobile.scrcpy.device.DataChannelInputStream;
 import com.genymobile.scrcpy.device.NativeEncoderBridge;
 import com.genymobile.scrcpy.device.PacketSink;
 import com.genymobile.scrcpy.signal.SignalServer;
+import com.genymobile.scrcpy.util.Ln;
 import com.genymobile.scrcpy.video.BitrateAggregator;
 import com.genymobile.scrcpy.video.SurfaceEncoder;
 
@@ -34,7 +35,7 @@ public final class StreamingSession implements SignalServer.Listener, AutoClosea
     public StreamingSession(StreamingConfig config, Runnable fatalError) {
         this.config = config;
         this.fatalError = fatalError;
-        input = new DataChannelInputStream(fatalError);
+        input = new DataChannelInputStream(this::onControlBacklogOverflow);
         controls.setController(input::onData);
         budgets = new BitrateAggregator(new BitrateAggregator.Output() {
             @Override
@@ -117,9 +118,9 @@ public final class StreamingSession implements SignalServer.Listener, AutoClosea
                 if (peer.active && config.control) { controls.handleControlData(key.toString(), data); }
             });
             bridge.open(config.audio, 0, config.turnUrl, config.turnUser, config.turnPassword,
-                    config.minimumMediaPort, config.maximumMediaPort);
+                    config.minimumMediaPort, config.maximumMediaPort, config.videoBitRate);
             budgets.addBridge(bridge);
-            controls.registerForwarder(key.toString(), data -> { });
+            controls.registerForwarder(key.toString(), (data, sender) -> { });
             controls.registerSender(key.toString(), message -> {
                 if (peer.active) { bridge.sendData(message.getBytes(java.nio.charset.StandardCharsets.UTF_8)); }
             });
@@ -135,6 +136,27 @@ public final class StreamingSession implements SignalServer.Listener, AutoClosea
     private void refreshCapture() {
         SurfaceEncoder target = encoder;
         if (target != null) { target.onPeerAttached(); }
+    }
+
+    /**
+     * A flooding viewer overflows the shared control backlog. It must be disconnected without
+     * touching the capture session: the control authority is released first so the queued inputs
+     * of the next controller cannot interleave with the flooder's backlog.
+     */
+    private void onControlBacklogOverflow(String sender) {
+        if (sender == null) {
+            Ln.w("Control backlog overflow without a known sender, dropped the whole backlog");
+            return;
+        }
+        for (Peer peer : peers.values()) {
+            if (sender.equals(peer.key.toString())) {
+                Ln.w("Control backlog overflow, disconnecting the flooding viewer " + sender);
+                controls.releaseControl(sender);
+                signaling.disconnect(peer.key.getRoom(), peer.key.getClient());
+                return;
+            }
+        }
+        Ln.w("Control backlog overflow from an unknown viewer " + sender);
     }
 
     private void bindSignals(Peer peer) {

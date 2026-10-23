@@ -143,6 +143,8 @@ public final class SignalServer implements AutoCloseable {
         dispatch(() -> {
             PeerSession peer = peers.get(new PeerKey(roomId, clientId));
             if (peer == null) { return; }
+            // Reached when the native bridge reports closure: the peer is gone for resume purposes.
+            Ln.i("Signal disconnect (media bridge ended): " + peer.key);
             WebSocket owner = peer.lease.getOwner();
             remove(peer);
             if (owner != null) { owner.close(1011, "Media peer ended"); }
@@ -191,6 +193,7 @@ public final class SignalServer implements AutoCloseable {
         PeerSession peer = new PeerSession(key, new PeerLease<>(conn, peerId, secret(32)));
         peers.put(key, peer);
         socket.peer = peer;
+        Ln.i("Signal join: " + key + " peers=" + peers.size());
         listener.onClientJoined(room, client);
         ready(peer, false);
     }
@@ -199,11 +202,15 @@ public final class SignalServer implements AutoCloseable {
         String peerId = msg.optString("peerId");
         if (!validId(peerId)) { reject(conn, "Invalid peer identity"); return; }
         if (peer == null || !peer.lease.authorize(msg.optString("token"), now())) {
+            // Distinguish a vanished peer (server removed it) from a token mismatch; both reject identically.
+            Ln.w("Signal resume rejected for " + msg.optString("clientId", "?") + ": "
+                    + (peer == null ? "peer not found" : "token mismatch"));
             reject(conn, "RESUME_TOKEN_INVALID"); return;
         }
         WebSocket previous = peer.lease.getOwner();
         boolean replaceMedia = peer.lease.attach(conn, peerId);
         socket.peer = peer;
+        Ln.i("Signal resume: " + peer.key + " replaceMedia=" + replaceMedia + " generation=" + peer.generation);
         if (previous != null && previous != conn) {
             sockets.remove(previous);
             previous.close(1000, "Replaced by authenticated resume");
@@ -238,19 +245,24 @@ public final class SignalServer implements AutoCloseable {
     }
     private void detach(WebSocket conn) {
         SocketSession socket = sockets.remove(conn);
-        if (socket != null && socket.peer != null && socket.peer.lease.detach(conn, now())) {
-            PeerKey key = socket.peer.key;
-            listener.onClientSuspended(key.getRoom(), key.getClient());
+        if (socket != null && socket.peer != null) {
+            Ln.i("Signal detach (socket closed): " + socket.peer.key);
+            if (socket.peer.lease.detach(conn, now())) {
+                PeerKey key = socket.peer.key;
+                listener.onClientSuspended(key.getRoom(), key.getClient());
+            }
         }
     }
     private void reject(WebSocket conn, String reason) {
         SocketSession socket = sockets.remove(conn);
+        Ln.w("Signal reject: " + reason + " (peer=" + (socket != null && socket.peer != null ? socket.peer.key : "none") + ")");
         if (socket != null && socket.peer != null && socket.peer.lease.owns(conn)) { remove(socket.peer); }
         conn.close(1008, reason);
     }
     private void remove(PeerSession peer) {
         if (peers.get(peer.key) != peer) { return; }
         peers.remove(peer.key);
+        Ln.i("Signal remove: " + peer.key + " peers=" + peers.size());
         for (SocketSession socket : sockets.values()) { if (socket.peer == peer) { socket.peer = null; } }
         listener.onClientLeft(peer.key.getRoom(), peer.key.getClient());
         if (peers.isEmpty()) { listener.onRoomEmpty(allowedRoom); }

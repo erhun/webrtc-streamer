@@ -1,5 +1,7 @@
 package com.genymobile.scrcpy.video;
 
+import android.os.SystemClock;
+
 import com.genymobile.scrcpy.device.NativeEncoderBridge;
 
 import java.util.Map;
@@ -16,12 +18,25 @@ public final class BitrateAggregator {
         default void onAggregatedPeerReset() {}
     }
 
+    /**
+     * GoogCC reports roughly once per second. A disconnected peer (closed tab inside the 45s lease
+     * recovery window, dead transport, frozen background tab) stops reporting and its last sample
+     * otherwise stays in the MIN aggregation forever, dragging every surviving viewer down to the
+     * dead peer's final estimate and starving tier upgrades. Samples older than this are excluded.
+     */
+    private static final long STALE_SAMPLE_MS = 3000L;
+
     private static final class Sample {
         final int bps;
         final double fps;
+        final long observedAtMs;
         Sample(int bps, double fps) {
+            this(bps, fps, SystemClock.elapsedRealtime());
+        }
+        Sample(int bps, double fps, long observedAtMs) {
             this.bps = bps;
             this.fps = fps;
+            this.observedAtMs = observedAtMs;
         }
     }
 
@@ -76,8 +91,9 @@ public final class BitrateAggregator {
     }
 
     private boolean hasActivePeer() {
+        long nowMs = SystemClock.elapsedRealtime();
         for (Sample sample : samples.values()) {
-            if (sample.bps > 0) {
+            if (sample.bps > 0 && nowMs - sample.observedAtMs <= STALE_SAMPLE_MS) {
                 return true;
             }
         }
@@ -90,10 +106,11 @@ public final class BitrateAggregator {
             output.onAggregatedBitrate(controller.bps, controller.fps);
             return;
         }
+        long nowMs = SystemClock.elapsedRealtime();
         int minBps = Integer.MAX_VALUE;
         double minFps = 0;
         for (Sample s : samples.values()) {
-            if (s.bps > 0 && s.bps < minBps) {
+            if (s.bps > 0 && nowMs - s.observedAtMs <= STALE_SAMPLE_MS && s.bps < minBps) {
                 minBps = s.bps;
                 minFps = s.fps;
             }

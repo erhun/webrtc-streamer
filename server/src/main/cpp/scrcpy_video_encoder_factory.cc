@@ -9,7 +9,15 @@ std::vector<webrtc::SdpVideoFormat> ScrcpyVideoEncoderFactory::GetSupportedForma
     // resolution-based table (~2.5 Mbps at 1080p), which stops the bitrate ladder from
     // climbing past 1280. Keep a capability ceiling and a conservative startup hint.
     std::vector<webrtc::SdpVideoFormat> formats;
-    // Primary H.264 codec
+    // Passthrough forwards device-encoded H.264 as-is; the decoder only needs a
+    // matching profile declaration to accept it. Declare both Baseline and
+    // Constrained Baseline: browsers such as Safari only offer 42e01f and would
+    // otherwise reject the video m-line entirely, which also corrupts bundle
+    // negotiation ("Failed to setup RTCP mux") and kills the whole session.
+    formats.push_back(webrtc::SdpVideoFormat("H264",
+            {{"packetization-mode", "1"}, {"profile-level-id", "42e01f"},
+                    {"level-asymmetry-allowed", "1"},
+                    {"x-google-max-bitrate", "20000"}, {"x-google-start-bitrate", "500"}}));
     formats.push_back(webrtc::SdpVideoFormat("H264",
             {{"packetization-mode", "1"}, {"profile-level-id", "42001f"},
                     {"level-asymmetry-allowed", "1"},
